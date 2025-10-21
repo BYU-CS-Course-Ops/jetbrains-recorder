@@ -1,0 +1,37 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>edu.byu.cs.courseops.record-editor-2025-10-21</id>
+
+    <!-- Public plugin name should be written in Title Case.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
+    <name>Record-editor-2025-10-21</name>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor url="https://www.yourcompany.com">YourCompany</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <actions>
+        <!-- Main group that will be added to Tools menu -->
+        <group id="RecordEditor.TopMenu" text="Record Editor" description="Record Editor Actions" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+
+            <!-- Start Recording Action -->
+            <action id="RecordEditor.StartRecording"
+                    class="actions.StartRecordingAction"
+                    text="Start Recording"
+                    description="Start recording editor actions"/>
+
+            <!-- Stop Recording Action -->
+            <action id="RecordEditor.StopRecording"
+                    class="actions.StopRecordingAction"
+                    text="Stop Recording"
+                    description="Stop recording editor actions"/>
+        </group>
+    </actions>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Add your extensions here -->
+    </extensions>
+</idea-plugin>
