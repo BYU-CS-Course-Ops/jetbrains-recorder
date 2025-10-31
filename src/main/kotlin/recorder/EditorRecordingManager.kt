@@ -8,6 +8,9 @@ import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vfs.VirtualFile
+import java.time.Instant
+import java.util.concurrent.BlockingQueue
+import java.util.concurrent.LinkedBlockingQueue
 
 /**
  * Manages registration of document listeners used to log editor input while a recording session is active.
@@ -17,6 +20,8 @@ class EditorRecordingManager : Disposable {
     private val logger = Logger.getInstance(EditorRecordingManager::class.java)
     private val eventMulticaster = EditorFactory.getInstance().eventMulticaster
     private var listener: DocumentListener? = null
+    private var eventQueue: BlockingQueue<QueueItem>? = null
+    private var workerThread: Thread? = null
 
     fun startRecording() {
         if (listener != null) {
@@ -24,11 +29,21 @@ class EditorRecordingManager : Disposable {
             return
         }
 
+        val queue = LinkedBlockingQueue<QueueItem>()
+        eventQueue = queue
+        workerThread = startWorker(queue)
+
         val documentListener = object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
-                if (event.newFragment.isNotEmpty()) {
-                    val typedText = event.newFragment.toString().replace("\n", "\\n")
-                    logger.info("Recorded input: \"$typedText\" in ${describeDocument(event)}")
+                if (event.newFragment.isNotEmpty() || event.oldFragment.isNotEmpty()) {
+                    val queuedEvent = QueuedDocumentChange(
+                        timestamp = Instant.now(),
+                        document = describeDocument(event),
+                        offset = event.offset,
+                        oldFragment = event.oldFragment.toString(),
+                        newFragment = event.newFragment.toString()
+                    )
+                    eventQueue?.offer(queuedEvent)
                 }
             }
         }
@@ -47,12 +62,17 @@ class EditorRecordingManager : Disposable {
 
         eventMulticaster.removeDocumentListener(toRemove)
         listener = null
+        eventQueue?.offer(StopSignal)
+        workerThread?.joinSafely()
+        workerThread = null
+        eventQueue = null
         logger.info("Editor recording stopped")
     }
 
     override fun dispose() {
-        listener?.let { eventMulticaster.removeDocumentListener(it) }
-        listener = null
+        if (listener != null) {
+            stopRecording()
+        }
     }
 
     private fun describeDocument(event: DocumentEvent): String {
@@ -61,4 +81,63 @@ class EditorRecordingManager : Disposable {
     }
 
     private fun formatVirtualFile(file: VirtualFile): String = file.presentableUrl
+
+    private fun String.escapeJson(): String = buildString(length) {
+        for (ch in this@escapeJson) {
+            when (ch) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\b' -> append("\\b")
+                '\t' -> append("\\t")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                else -> if (ch < ' ') {
+                    append(String.format("\\u%04x", ch.code))
+                } else {
+                    append(ch)
+                }
+            }
+        }
+    }
+
+    private fun startWorker(queue: BlockingQueue<QueueItem>): Thread {
+        return Thread({
+            while (true) {
+                when (val item = queue.take()) {
+                    is QueuedDocumentChange -> logQueuedEvent(item)
+                    StopSignal -> return@Thread
+                }
+            }
+        }, "EditorRecordingManager-Logger").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun Thread.joinSafely() {
+        try {
+            join()
+        } catch (ie: InterruptedException) {
+            interrupt()
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    private fun logQueuedEvent(change: QueuedDocumentChange) {
+        val message =
+            """{"timestamp":"${change.timestamp.toString().escapeJson()}","document":"${change.document.escapeJson()}","offset":${change.offset},"oldFragment":"${change.oldFragment.escapeJson()}","newFragment":"${change.newFragment.escapeJson()}"}"""
+        logger.info(message)
+    }
+
+    private sealed interface QueueItem
+
+    private data class QueuedDocumentChange(
+        val timestamp: Instant,
+        val document: String,
+        val offset: Int,
+        val oldFragment: String,
+        val newFragment: String
+    ) : QueueItem
+
+    private data object StopSignal : QueueItem
 }
