@@ -12,6 +12,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import java.io.BufferedWriter
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardOpenOption
@@ -33,6 +34,7 @@ class EditorRecordingManager : Disposable {
     private var workerThread: Thread? = null
     private var eventWriter: RecordingEventWriter? = null
     private val fileTimestampFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HHmm")
+    private var workspaceRoots: List<Path> = emptyList()
 
     fun startRecording() {
         if (listener != null) {
@@ -42,6 +44,7 @@ class EditorRecordingManager : Disposable {
 
         val queue = LinkedBlockingQueue<QueueItem>()
         eventQueue = queue
+        workspaceRoots = collectWorkspaceRoots()
         val sessionTimestamp = fileTimestampFormatter.format(LocalDateTime.now())
         val writer = createWriter(sessionTimestamp)
         eventWriter = writer
@@ -50,9 +53,13 @@ class EditorRecordingManager : Disposable {
         val documentListener = object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
                 if (event.newFragment.isNotEmpty() || event.oldFragment.isNotEmpty()) {
+                    val virtualFile = FileDocumentManager.getInstance().getFile(event.document)
+                    if (!shouldRecord(virtualFile)) {
+                        return
+                    }
                     val queuedEvent = QueuedDocumentChange(
                         timestamp = Instant.now(),
-                        document = describeDocument(event),
+                        document = describeDocument(virtualFile),
                         offset = event.offset,
                         oldFragment = event.oldFragment.toString(),
                         newFragment = event.newFragment.toString()
@@ -86,6 +93,7 @@ class EditorRecordingManager : Disposable {
         workerThread = null
         eventQueue = null
         eventWriter = null
+        workspaceRoots = emptyList()
         logger.info("Editor recording stopped")
     }
 
@@ -95,10 +103,8 @@ class EditorRecordingManager : Disposable {
         }
     }
 
-    private fun describeDocument(event: DocumentEvent): String {
-        val file = FileDocumentManager.getInstance().getFile(event.document)
-        return file?.let { formatVirtualFile(it) } ?: "unsaved document"
-    }
+    private fun describeDocument(file: VirtualFile?): String =
+        file?.let { formatVirtualFile(it) } ?: "unsaved document"
 
     private fun formatVirtualFile(file: VirtualFile): String = file.presentableUrl
 
@@ -163,6 +169,41 @@ class EditorRecordingManager : Disposable {
         """{"timestamp":"${
             change.timestamp.toString().escapeJson()
         }","document":"${change.document.escapeJson()}","offset":${change.offset},"oldFragment":"${change.oldFragment.escapeJson()}","newFragment":"${change.newFragment.escapeJson()}"}"""
+
+    private fun collectWorkspaceRoots(): List<Path> {
+        val openProjects = ProjectManager.getInstance().openProjects
+        if (openProjects.isEmpty()) {
+            return emptyList()
+        }
+        val roots = mutableListOf<Path>()
+        for (project in openProjects) {
+            val basePath = project.basePath ?: continue
+            try {
+                roots.add(Paths.get(basePath).normalize())
+            } catch (ipe: InvalidPathException) {
+                logger.warn("Skipping project with invalid base path: $basePath", ipe)
+            }
+        }
+        return roots
+    }
+
+    private fun shouldRecord(virtualFile: VirtualFile?): Boolean {
+        if (virtualFile == null || !virtualFile.isInLocalFileSystem) {
+            return false
+        }
+        val filePath = try {
+            Paths.get(virtualFile.path).normalize()
+        } catch (ipe: InvalidPathException) {
+            if (logger.isDebugEnabled) {
+                logger.debug("Skipping document with invalid path: ${virtualFile.path}", ipe)
+            }
+            return false
+        }
+        if (workspaceRoots.isEmpty()) {
+            return false
+        }
+        return workspaceRoots.any { filePath.startsWith(it) }
+    }
 
     private fun createWriter(timestamp: String): RecordingEventWriter? = try {
         RecordingEventWriter(timestamp).also { writer ->
