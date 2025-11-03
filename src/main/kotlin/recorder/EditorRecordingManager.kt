@@ -7,8 +7,17 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFile
+import java.io.BufferedWriter
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+import java.nio.file.StandardOpenOption
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.BlockingQueue
 import java.util.concurrent.LinkedBlockingQueue
 
@@ -22,6 +31,8 @@ class EditorRecordingManager : Disposable {
     private var listener: DocumentListener? = null
     private var eventQueue: BlockingQueue<QueueItem>? = null
     private var workerThread: Thread? = null
+    private var eventWriter: RecordingEventWriter? = null
+    private val fileTimestampFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HHmm")
 
     fun startRecording() {
         if (listener != null) {
@@ -31,7 +42,10 @@ class EditorRecordingManager : Disposable {
 
         val queue = LinkedBlockingQueue<QueueItem>()
         eventQueue = queue
-        workerThread = startWorker(queue)
+        val sessionTimestamp = fileTimestampFormatter.format(LocalDateTime.now())
+        val writer = createWriter(sessionTimestamp)
+        eventWriter = writer
+        workerThread = startWorker(queue, writer)
 
         val documentListener = object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
@@ -62,10 +76,16 @@ class EditorRecordingManager : Disposable {
 
         eventMulticaster.removeDocumentListener(toRemove)
         listener = null
-        eventQueue?.offer(StopSignal)
+        val queue = eventQueue
+        if (queue != null) {
+            queue.offer(StopSignal)
+        } else {
+            eventWriter?.close()
+        }
         workerThread?.joinSafely()
         workerThread = null
         eventQueue = null
+        eventWriter = null
         logger.info("Editor recording stopped")
     }
 
@@ -100,15 +120,27 @@ class EditorRecordingManager : Disposable {
         }
     }
 
-    private fun startWorker(queue: BlockingQueue<QueueItem>): Thread {
+    private fun startWorker(
+        queue: BlockingQueue<QueueItem>,
+        writer: RecordingEventWriter?
+    ): Thread {
         return Thread({
-            while (true) {
-                when (val item = queue.take()) {
-                    is QueuedDocumentChange -> logQueuedEvent(item)
-                    StopSignal -> return@Thread
+            try {
+                while (true) {
+                    when (val item = queue.take()) {
+                        is QueuedDocumentChange -> {
+                            writer?.write(item) ?: logQueuedEvent(item)
+                        }
+
+                        StopSignal -> break
+                    }
                 }
+            } catch (ie: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                writer?.close()
             }
-        }, "EditorRecordingManager-Logger").apply {
+        }, "EditorRecordingManager-Worker").apply {
             isDaemon = true
             start()
         }
@@ -124,9 +156,23 @@ class EditorRecordingManager : Disposable {
     }
 
     private fun logQueuedEvent(change: QueuedDocumentChange) {
-        val message =
-            """{"timestamp":"${change.timestamp.toString().escapeJson()}","document":"${change.document.escapeJson()}","offset":${change.offset},"oldFragment":"${change.oldFragment.escapeJson()}","newFragment":"${change.newFragment.escapeJson()}"}"""
-        logger.info(message)
+        logger.info(formatChangeAsJson(change))
+    }
+
+    private fun formatChangeAsJson(change: QueuedDocumentChange): String =
+        """{"timestamp":"${
+            change.timestamp.toString().escapeJson()
+        }","document":"${change.document.escapeJson()}","offset":${change.offset},"oldFragment":"${change.oldFragment.escapeJson()}","newFragment":"${change.newFragment.escapeJson()}"}"""
+
+    private fun createWriter(timestamp: String): RecordingEventWriter? = try {
+        RecordingEventWriter(timestamp).also { writer ->
+            writer.outputPath?.let { path ->
+                logger.info("Recording events will be written to $path")
+            }
+        }
+    } catch (t: Throwable) {
+        logger.warn("Failed to initialize recording writer; events will only be logged", t)
+        null
     }
 
     private sealed interface QueueItem
@@ -140,4 +186,60 @@ class EditorRecordingManager : Disposable {
     ) : QueueItem
 
     private data object StopSignal : QueueItem
+
+    private inner class RecordingEventWriter(private val timestamp: String) {
+        val outputPath: Path?
+        private val writer: BufferedWriter?
+
+        init {
+            val projectBasePath = ProjectManager.getInstance().openProjects
+                .firstOrNull { it.basePath != null }
+                ?.basePath
+            if (projectBasePath == null) {
+                logger.warn("Unable to locate a project workspace; recording events will only be logged.")
+                outputPath = null
+                writer = null
+            } else {
+                val directory = Paths.get(projectBasePath, ".record-editor")
+                outputPath = directory.resolve("recording-$timestamp.jsonl")
+                writer = try {
+                    Files.createDirectories(directory)
+                    Files.newBufferedWriter(
+                        outputPath,
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                    )
+                } catch (ioe: IOException) {
+                    logger.warn("Failed to open recording file at $outputPath; events will only be logged.", ioe)
+                    null
+                }
+            }
+        }
+
+        fun write(change: QueuedDocumentChange) {
+            val payload = formatChangeAsJson(change)
+            val target = writer
+            if (target != null) {
+                try {
+                    target.write(payload)
+                    target.newLine()
+                    target.flush()
+                } catch (ioe: IOException) {
+                    logger.warn("Failed to persist recording event; falling back to IDE log.", ioe)
+                    logQueuedEvent(change)
+                }
+            } else {
+                logQueuedEvent(change)
+            }
+        }
+
+        fun close() {
+            try {
+                writer?.close()
+            } catch (ioe: IOException) {
+                logger.warn("Failed to close recording file writer.", ioe)
+            }
+        }
+    }
 }
