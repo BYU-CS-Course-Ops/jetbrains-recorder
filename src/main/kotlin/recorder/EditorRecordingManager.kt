@@ -3,6 +3,7 @@ package recorder
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
@@ -35,6 +36,7 @@ class EditorRecordingManager : Disposable {
     private var eventWriter: RecordingEventWriter? = null
     private val fileTimestampFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HHmm")
     private var workspaceRoots: List<Path> = emptyList()
+    private val recordedInitialStateKeys: MutableSet<String> = mutableSetOf()
 
     fun startRecording() {
         if (listener != null) {
@@ -49,6 +51,7 @@ class EditorRecordingManager : Disposable {
         val writer = createWriter(sessionTimestamp)
         eventWriter = writer
         workerThread = startWorker(queue, writer)
+        recordedInitialStateKeys.clear()
 
         val documentListener = object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
@@ -57,6 +60,7 @@ class EditorRecordingManager : Disposable {
                     if (!shouldRecord(virtualFile)) {
                         return
                     }
+                    recordInitialStateIfNeeded(event, virtualFile)
                     val queuedEvent = QueuedDocumentChange(
                         timestamp = Instant.now(),
                         document = describeDocument(virtualFile),
@@ -94,6 +98,7 @@ class EditorRecordingManager : Disposable {
         eventQueue = null
         eventWriter = null
         workspaceRoots = emptyList()
+        recordedInitialStateKeys.clear()
         logger.info("Editor recording stopped")
     }
 
@@ -203,6 +208,39 @@ class EditorRecordingManager : Disposable {
             return false
         }
         return workspaceRoots.any { filePath.startsWith(it) }
+    }
+
+    private fun recordInitialStateIfNeeded(event: DocumentEvent, virtualFile: VirtualFile?) {
+        val queue = eventQueue ?: return
+        val key = buildInitialStateKey(event.document, virtualFile)
+        if (!recordedInitialStateKeys.add(key)) {
+            return
+        }
+        val initialText = computeDocumentTextBeforeChange(event)
+        val snapshotEvent = QueuedDocumentChange(
+            timestamp = Instant.now(),
+            document = describeDocument(virtualFile),
+            offset = 0,
+            oldFragment = "",
+            newFragment = initialText
+        )
+        queue.offer(snapshotEvent)
+    }
+
+    private fun buildInitialStateKey(document: Document, virtualFile: VirtualFile?): String {
+        return virtualFile?.path ?: "unsaved@${System.identityHashCode(document)}"
+    }
+
+    private fun computeDocumentTextBeforeChange(event: DocumentEvent): String {
+        val currentText = event.document.charsSequence.toString()
+        if (currentText.isEmpty() && event.newFragment.isEmpty() && event.oldFragment.isEmpty()) {
+            return ""
+        }
+        val builder = StringBuilder(currentText)
+        val replaceStart = event.offset.coerceIn(0, builder.length)
+        val replaceEnd = (replaceStart + event.newFragment.length).coerceAtMost(builder.length)
+        builder.replace(replaceStart, replaceEnd, event.oldFragment.toString())
+        return builder.toString()
     }
 
     private fun createWriter(timestamp: String): RecordingEventWriter? = try {
