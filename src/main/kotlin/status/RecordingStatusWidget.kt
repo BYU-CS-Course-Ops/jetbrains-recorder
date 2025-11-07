@@ -1,0 +1,114 @@
+package status
+
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.components.service
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.CustomStatusBarWidget
+import com.intellij.openapi.wm.StatusBar
+import com.intellij.openapi.wm.StatusBarWidget
+import com.intellij.openapi.wm.StatusBarWidgetFactory
+import com.intellij.ui.JBColor
+import com.intellij.ui.components.ActionLink
+import com.intellij.util.messages.MessageBusConnection
+import com.intellij.util.ui.JBUI
+import recorder.EditorRecordingManager
+import recorder.RecordingStateListener
+import java.awt.Color
+import java.awt.FlowLayout
+import javax.swing.JComponent
+import javax.swing.JLabel
+import javax.swing.JPanel
+
+class RecordingStatusWidgetFactory : StatusBarWidgetFactory {
+    override fun getId(): String = "record-editor-status-widget"
+
+    override fun getDisplayName(): String = "Recorder Status"
+
+    override fun isAvailable(project: Project): Boolean = true
+
+    override fun createWidget(project: Project): StatusBarWidget = RecordingStatusWidget(project)
+
+    override fun disposeWidget(widget: StatusBarWidget) {
+        widget.dispose()
+    }
+
+    override fun canBeEnabledOn(statusBar: StatusBar): Boolean = true
+}
+
+private class RecordingStatusWidget(private val project: Project) :
+    CustomStatusBarWidget,
+    StatusBarWidget.Multiframe,
+    RecordingStateListener {
+
+    private val panel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
+        border = JBUI.Borders.empty(0, 8, 0, 8)
+        isOpaque = false
+    }
+    private val indicatorDot = JLabel("\u25CF")
+    private val indicatorLabel = JLabel()
+    private val toggleLink = ActionLink("Start") { toggleRecording() }
+    private var statusBar: StatusBar? = null
+    private var connection: MessageBusConnection? = null
+    private var isRecording: Boolean = false
+
+    init {
+        indicatorDot.border = JBUI.Borders.emptyRight(4)
+        panel.add(indicatorDot)
+        panel.add(indicatorLabel)
+        panel.add(toggleLink)
+        updateUi(service<EditorRecordingManager>().isRecording())
+        subscribeToRecordingUpdates()
+    }
+
+    override fun ID(): String = "record-editor-status-widget"
+
+    override fun install(statusBar: StatusBar) {
+        this.statusBar = statusBar
+    }
+
+    override fun dispose() {
+        connection?.disconnect()
+        connection = null
+        statusBar = null
+    }
+
+    override fun copy(): StatusBarWidget = RecordingStatusWidget(project)
+
+    override fun getComponent(): JComponent = panel
+
+    override fun recordingStateChanged(isRecording: Boolean) {
+        ApplicationManager.getApplication().invokeLater {
+            updateUi(isRecording)
+        }
+    }
+
+    private fun subscribeToRecordingUpdates() {
+        connection = ApplicationManager.getApplication().messageBus.connect(this).also { bus ->
+            bus.subscribe(EditorRecordingManager.RECORDING_STATE_TOPIC, this)
+        }
+    }
+
+    private fun updateUi(isRecording: Boolean) {
+        this.isRecording = isRecording
+        val managerStateText = if (isRecording) "Recorder: On" else "Recorder: Off"
+        indicatorLabel.text = managerStateText
+        indicatorDot.foreground = if (isRecording) ACTIVE_COLOR else INACTIVE_COLOR
+        toggleLink.text = if (isRecording) "Stop" else "Start"
+        panel.toolTipText = if (isRecording) "Editor recorder is running" else "Editor recorder is stopped"
+        statusBar?.updateWidget(ID())
+    }
+
+    private fun toggleRecording() {
+        val manager = service<EditorRecordingManager>()
+        if (manager.isRecording()) {
+            manager.stopRecording()
+        } else {
+            manager.startRecording()
+        }
+    }
+
+    companion object {
+        private val ACTIVE_COLOR = JBColor(Color(0x2E7D32), Color(0x81C784))
+        private val INACTIVE_COLOR = JBColor(Color(0xB71C1C), Color(0xEF9A9A))
+    }
+}

@@ -3,6 +3,7 @@ package recorder
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
@@ -10,6 +11,7 @@ import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.util.messages.Topic
 import java.io.BufferedWriter
 import java.io.IOException
 import java.nio.file.Files
@@ -37,6 +39,11 @@ class EditorRecordingManager : Disposable {
     private val fileTimestampFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HHmm")
     private var workspaceRoots: List<Path> = emptyList()
     private val recordedInitialStateKeys: MutableSet<String> = mutableSetOf()
+
+    companion object {
+        val RECORDING_STATE_TOPIC: Topic<RecordingStateListener> =
+            Topic.create("Record Editor Recording State", RecordingStateListener::class.java)
+    }
 
     fun startRecording() {
         if (listener != null) {
@@ -75,6 +82,7 @@ class EditorRecordingManager : Disposable {
 
         eventMulticaster.addDocumentListener(documentListener, this)
         listener = documentListener
+        notifyRecordingStateChanged(true)
         logger.info("Editor recording started")
     }
 
@@ -99,6 +107,7 @@ class EditorRecordingManager : Disposable {
         eventWriter = null
         workspaceRoots = emptyList()
         recordedInitialStateKeys.clear()
+        notifyRecordingStateChanged(false)
         logger.info("Editor recording stopped")
     }
 
@@ -210,6 +219,8 @@ class EditorRecordingManager : Disposable {
         return workspaceRoots.any { filePath.startsWith(it) }
     }
 
+    fun isRecording(): Boolean = listener != null
+
     private fun recordInitialStateIfNeeded(event: DocumentEvent, virtualFile: VirtualFile?) {
         val queue = eventQueue ?: return
         val key = buildInitialStateKey(event.document, virtualFile)
@@ -320,5 +331,11 @@ class EditorRecordingManager : Disposable {
                 logger.warn("Failed to close recording file writer.", ioe)
             }
         }
+    }
+
+    private fun notifyRecordingStateChanged(isRecording: Boolean) {
+        ApplicationManager.getApplication().messageBus
+            .syncPublisher(RECORDING_STATE_TOPIC)
+            .recordingStateChanged(isRecording)
     }
 }

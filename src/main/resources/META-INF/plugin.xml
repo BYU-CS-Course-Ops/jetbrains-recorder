@@ -33,5 +33,6 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- Add your extensions here -->
+        <statusBarWidgetFactory implementation="status.RecordingStatusWidgetFactory"/>
     </extensions>
 </idea-plugin>
