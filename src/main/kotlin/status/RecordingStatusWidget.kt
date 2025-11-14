@@ -14,7 +14,9 @@ import com.intellij.util.ui.JBUI
 import recorder.EditorRecordingManager
 import recorder.RecordingStateListener
 import java.awt.Color
-import java.awt.FlowLayout
+import java.awt.Component
+import javax.swing.Box
+import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -40,9 +42,11 @@ private class RecordingStatusWidget(private val project: Project) :
     StatusBarWidget.Multiframe,
     RecordingStateListener {
 
-    private val panel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
+    private val panel = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
         border = JBUI.Borders.empty(0, 8, 0, 8)
         isOpaque = false
+        alignmentY = Component.CENTER_ALIGNMENT
     }
     private val indicatorDot = JLabel("\u25CF")
     private val indicatorLabel = JLabel()
@@ -53,8 +57,13 @@ private class RecordingStatusWidget(private val project: Project) :
 
     init {
         indicatorDot.border = JBUI.Borders.emptyRight(4)
+        indicatorDot.alignmentY = Component.CENTER_ALIGNMENT
+        indicatorLabel.alignmentY = Component.CENTER_ALIGNMENT
+        toggleLink.alignmentY = Component.CENTER_ALIGNMENT
         panel.add(indicatorDot)
+        panel.add(Box.createHorizontalStrut(6))
         panel.add(indicatorLabel)
+        panel.add(Box.createHorizontalStrut(8))
         panel.add(toggleLink)
         updateUi(service<EditorRecordingManager>().isRecording())
         subscribeToRecordingUpdates()
