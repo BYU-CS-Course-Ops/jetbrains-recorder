@@ -1,9 +1,9 @@
 package recorder
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
@@ -12,8 +12,8 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.messages.Topic
-import java.io.BufferedWriter
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
@@ -24,6 +24,8 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.BlockingQueue
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPOutputStream
 
 /**
  * Manages registration of document listeners used to log editor input while a recording session is active.
@@ -43,6 +45,7 @@ class EditorRecordingManager : Disposable {
     companion object {
         val RECORDING_STATE_TOPIC: Topic<RecordingStateListener> =
             Topic.create("Record Editor Recording State", RecordingStateListener::class.java)
+        private const val BATCH_IDLE_MILLIS = 1000L
     }
 
     fun startRecording() {
@@ -145,24 +148,47 @@ class EditorRecordingManager : Disposable {
         writer: RecordingEventWriter?
     ): Thread {
         return Thread({
+            val batch = mutableListOf<QueuedDocumentChange>()
             try {
                 while (true) {
-                    when (val item = queue.take()) {
-                        is QueuedDocumentChange -> {
-                            writer?.write(item) ?: logQueuedEvent(item)
+                    val item = queue.poll(BATCH_IDLE_MILLIS, TimeUnit.MILLISECONDS)
+                    when (item) {
+                        is QueuedDocumentChange -> batch.add(item)
+                        StopSignal -> {
+                            flushBatch(batch, writer)
+                            break
                         }
 
-                        StopSignal -> break
+                        null -> flushBatch(batch, writer)
                     }
                 }
             } catch (ie: InterruptedException) {
                 Thread.currentThread().interrupt()
             } finally {
+                flushBatch(batch, writer)
                 writer?.close()
             }
         }, "EditorRecordingManager-Worker").apply {
             isDaemon = true
             start()
+        }
+    }
+
+    private fun flushBatch(
+        batch: MutableList<QueuedDocumentChange>,
+        writer: RecordingEventWriter?
+    ) {
+        if (batch.isEmpty()) {
+            return
+        }
+        try {
+            if (writer != null) {
+                writer.writeBatch(batch)
+            } else {
+                batch.forEach { logQueuedEvent(it) }
+            }
+        } finally {
+            batch.clear()
         }
     }
 
@@ -279,7 +305,6 @@ class EditorRecordingManager : Disposable {
 
     private inner class RecordingEventWriter(private val timestamp: String) {
         val outputPath: Path?
-        private val writer: BufferedWriter?
 
         init {
             val projectBasePath = ProjectManager.getInstance().openProjects
@@ -288,48 +313,48 @@ class EditorRecordingManager : Disposable {
             if (projectBasePath == null) {
                 logger.warn("Unable to locate a project workspace; recording events will only be logged.")
                 outputPath = null
-                writer = null
             } else {
                 val directory = Paths.get(projectBasePath, ".record-editor")
-                outputPath = directory.resolve("recording-$timestamp.jsonl")
-                writer = try {
+                outputPath = directory.resolve("recording-$timestamp.jsonl.gz")
+                try {
                     Files.createDirectories(directory)
-                    Files.newBufferedWriter(
-                        outputPath,
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                    )
                 } catch (ioe: IOException) {
-                    logger.warn("Failed to open recording file at $outputPath; events will only be logged.", ioe)
-                    null
+                    logger.warn("Failed to prepare recording directory at $directory; events will only be logged.", ioe)
                 }
             }
         }
 
-        fun write(change: QueuedDocumentChange) {
-            val payload = formatChangeAsJson(change)
-            val target = writer
-            if (target != null) {
-                try {
-                    target.write(payload)
-                    target.newLine()
-                    target.flush()
-                } catch (ioe: IOException) {
-                    logger.warn("Failed to persist recording event; falling back to IDE log.", ioe)
-                    logQueuedEvent(change)
+        fun writeBatch(batch: List<QueuedDocumentChange>) {
+            if (batch.isEmpty()) {
+                return
+            }
+            val targetPath = outputPath
+            if (targetPath == null) {
+                batch.forEach { logQueuedEvent(it) }
+                return
+            }
+            try {
+                Files.newOutputStream(
+                    targetPath,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND,
+                    StandardOpenOption.WRITE
+                ).use { fileStream ->
+                    GZIPOutputStream(fileStream).bufferedWriter(StandardCharsets.UTF_8).use { gzipWriter ->
+                        batch.forEach { change ->
+                            gzipWriter.write(formatChangeAsJson(change))
+                            gzipWriter.newLine()
+                        }
+                    }
                 }
-            } else {
-                logQueuedEvent(change)
+            } catch (ioe: IOException) {
+                logger.warn("Failed to persist recording batch; falling back to IDE log.", ioe)
+                batch.forEach { logQueuedEvent(it) }
             }
         }
 
         fun close() {
-            try {
-                writer?.close()
-            } catch (ioe: IOException) {
-                logger.warn("Failed to close recording file writer.", ioe)
-            }
+            // No persistent resources remain open between batches.
         }
     }
 
