@@ -20,8 +20,6 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardOpenOption
 import java.time.Instant
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.BlockingQueue
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -37,8 +35,6 @@ class EditorRecordingManager : Disposable {
     private var listener: DocumentListener? = null
     private var eventQueue: BlockingQueue<QueueItem>? = null
     private var workerThread: Thread? = null
-    private var eventWriter: RecordingEventWriter? = null
-    private val fileTimestampFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HHmm")
     private var workspaceRoots: List<Path> = emptyList()
     private val recordedInitialStateKeys: MutableSet<String> = mutableSetOf()
 
@@ -57,9 +53,7 @@ class EditorRecordingManager : Disposable {
         val queue = LinkedBlockingQueue<QueueItem>()
         eventQueue = queue
         workspaceRoots = collectWorkspaceRoots()
-        val sessionTimestamp = fileTimestampFormatter.format(LocalDateTime.now())
-        val writer = createWriter(sessionTimestamp)
-        eventWriter = writer
+        val writer = RecordingEventWriter()
         workerThread = startWorker(queue, writer)
         recordedInitialStateKeys.clear()
 
@@ -70,10 +64,11 @@ class EditorRecordingManager : Disposable {
                     if (!shouldRecord(virtualFile)) {
                         return
                     }
-                    recordInitialStateIfNeeded(event, virtualFile)
+                    val descriptor = documentDescriptorFor(event.document, virtualFile)
+                    recordInitialStateIfNeeded(event, descriptor)
                     val queuedEvent = QueuedDocumentChange(
                         timestamp = Instant.now(),
-                        document = describeDocument(virtualFile),
+                        descriptor = descriptor,
                         offset = event.offset,
                         oldFragment = event.oldFragment.toString(),
                         newFragment = event.newFragment.toString()
@@ -101,13 +96,10 @@ class EditorRecordingManager : Disposable {
         val queue = eventQueue
         if (queue != null) {
             queue.offer(StopSignal)
-        } else {
-            eventWriter?.close()
         }
         workerThread?.joinSafely()
         workerThread = null
         eventQueue = null
-        eventWriter = null
         workspaceRoots = emptyList()
         recordedInitialStateKeys.clear()
         notifyRecordingStateChanged(false)
@@ -145,7 +137,7 @@ class EditorRecordingManager : Disposable {
 
     private fun startWorker(
         queue: BlockingQueue<QueueItem>,
-        writer: RecordingEventWriter?
+        writer: RecordingEventWriter
     ): Thread {
         return Thread({
             val batch = mutableListOf<QueuedDocumentChange>()
@@ -153,20 +145,28 @@ class EditorRecordingManager : Disposable {
                 while (true) {
                     val item = queue.poll(BATCH_IDLE_MILLIS, TimeUnit.MILLISECONDS)
                     when (item) {
-                        is QueuedDocumentChange -> batch.add(item)
+                        is QueuedDocumentChange -> {
+                            if (batch.isNotEmpty() && batch.first().descriptor.id != item.descriptor.id) {
+                                flushBatch(batch, writer)
+                            }
+                            batch.add(item)
+                        }
+
                         StopSignal -> {
                             flushBatch(batch, writer)
                             break
                         }
 
-                        null -> flushBatch(batch, writer)
+                        null -> {
+                            flushBatch(batch, writer)
+                        }
                     }
                 }
             } catch (ie: InterruptedException) {
                 Thread.currentThread().interrupt()
             } finally {
                 flushBatch(batch, writer)
-                writer?.close()
+                writer.close()
             }
         }, "EditorRecordingManager-Worker").apply {
             isDaemon = true
@@ -176,20 +176,14 @@ class EditorRecordingManager : Disposable {
 
     private fun flushBatch(
         batch: MutableList<QueuedDocumentChange>,
-        writer: RecordingEventWriter?
+        writer: RecordingEventWriter
     ) {
         if (batch.isEmpty()) {
             return
         }
-        try {
-            if (writer != null) {
-                writer.writeBatch(batch)
-            } else {
-                batch.forEach { logQueuedEvent(it) }
-            }
-        } finally {
-            batch.clear()
-        }
+        val descriptor = batch.first().descriptor
+        writer.writeBatch(descriptor, batch)
+        batch.clear()
     }
 
     private fun Thread.joinSafely() {
@@ -208,7 +202,7 @@ class EditorRecordingManager : Disposable {
     private fun formatChangeAsJson(change: QueuedDocumentChange): String =
         """{"timestamp":"${
             change.timestamp.toString().escapeJson()
-        }","document":"${change.document.escapeJson()}","offset":${change.offset},"oldFragment":"${change.oldFragment.escapeJson()}","newFragment":"${change.newFragment.escapeJson()}"}"""
+        }","document":"${change.descriptor.displayName.escapeJson()}","offset":${change.offset},"oldFragment":"${change.oldFragment.escapeJson()}","newFragment":"${change.newFragment.escapeJson()}"}"""
 
     private fun collectWorkspaceRoots(): List<Path> {
         val openProjects = ProjectManager.getInstance().openProjects
@@ -247,25 +241,20 @@ class EditorRecordingManager : Disposable {
 
     fun isRecording(): Boolean = listener != null
 
-    private fun recordInitialStateIfNeeded(event: DocumentEvent, virtualFile: VirtualFile?) {
+    private fun recordInitialStateIfNeeded(event: DocumentEvent, descriptor: DocumentDescriptor) {
         val queue = eventQueue ?: return
-        val key = buildInitialStateKey(event.document, virtualFile)
-        if (!recordedInitialStateKeys.add(key)) {
+        if (!recordedInitialStateKeys.add(descriptor.id)) {
             return
         }
         val initialText = computeDocumentTextBeforeChange(event)
         val snapshotEvent = QueuedDocumentChange(
             timestamp = Instant.now(),
-            document = describeDocument(virtualFile),
+            descriptor = descriptor,
             offset = 0,
             oldFragment = "",
             newFragment = initialText
         )
         queue.offer(snapshotEvent)
-    }
-
-    private fun buildInitialStateKey(document: Document, virtualFile: VirtualFile?): String {
-        return virtualFile?.path ?: "unsaved@${System.identityHashCode(document)}"
     }
 
     private fun computeDocumentTextBeforeChange(event: DocumentEvent): String {
@@ -280,22 +269,11 @@ class EditorRecordingManager : Disposable {
         return builder.toString()
     }
 
-    private fun createWriter(timestamp: String): RecordingEventWriter? = try {
-        RecordingEventWriter(timestamp).also { writer ->
-            writer.outputPath?.let { path ->
-                logger.info("Recording events will be written to $path")
-            }
-        }
-    } catch (t: Throwable) {
-        logger.warn("Failed to initialize recording writer; events will only be logged", t)
-        null
-    }
-
     private sealed interface QueueItem
 
     private data class QueuedDocumentChange(
         val timestamp: Instant,
-        val document: String,
+        val descriptor: DocumentDescriptor,
         val offset: Int,
         val oldFragment: String,
         val newFragment: String
@@ -303,32 +281,15 @@ class EditorRecordingManager : Disposable {
 
     private data object StopSignal : QueueItem
 
-    private inner class RecordingEventWriter(private val timestamp: String) {
+    private data class DocumentDescriptor(
+        val id: String,
+        val displayName: String,
         val outputPath: Path?
+    )
 
-        init {
-            val projectBasePath = ProjectManager.getInstance().openProjects
-                .firstOrNull { it.basePath != null }
-                ?.basePath
-            if (projectBasePath == null) {
-                logger.warn("Unable to locate a project workspace; recording events will only be logged.")
-                outputPath = null
-            } else {
-                val directory = Paths.get(projectBasePath, ".record-editor")
-                outputPath = directory.resolve("recording-$timestamp.jsonl.gz")
-                try {
-                    Files.createDirectories(directory)
-                } catch (ioe: IOException) {
-                    logger.warn("Failed to prepare recording directory at $directory; events will only be logged.", ioe)
-                }
-            }
-        }
-
-        fun writeBatch(batch: List<QueuedDocumentChange>) {
-            if (batch.isEmpty()) {
-                return
-            }
-            val targetPath = outputPath
+    private inner class RecordingEventWriter {
+        fun writeBatch(descriptor: DocumentDescriptor, batch: List<QueuedDocumentChange>) {
+            val targetPath = descriptor.outputPath
             if (targetPath == null) {
                 batch.forEach { logQueuedEvent(it) }
                 return
@@ -348,7 +309,7 @@ class EditorRecordingManager : Disposable {
                     }
                 }
             } catch (ioe: IOException) {
-                logger.warn("Failed to persist recording batch; falling back to IDE log.", ioe)
+                logger.warn("Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.", ioe)
                 batch.forEach { logQueuedEvent(it) }
             }
         }
@@ -357,6 +318,26 @@ class EditorRecordingManager : Disposable {
             // No persistent resources remain open between batches.
         }
     }
+
+    private fun documentDescriptorFor(document: Document, virtualFile: VirtualFile?): DocumentDescriptor {
+        val identifier = virtualFile?.path ?: "unsaved@${System.identityHashCode(document)}"
+        val outputPath = virtualFile?.let { computeRecordingPath(it) }
+        return DocumentDescriptor(
+            id = identifier,
+            displayName = describeDocument(virtualFile),
+            outputPath = outputPath
+        )
+    }
+
+    private fun computeRecordingPath(file: VirtualFile): Path? =
+        try {
+            val source = Paths.get(file.path)
+            val baseName = file.nameWithoutExtension.ifEmpty { file.name }
+            source.resolveSibling("$baseName.recording.jsonl.gz")
+        } catch (ipe: InvalidPathException) {
+            logger.warn("Unable to resolve recording path for ${file.path}; events will only be logged.", ipe)
+            null
+        }
 
     private fun notifyRecordingStateChanged(isRecording: Boolean) {
         ApplicationManager.getApplication().messageBus

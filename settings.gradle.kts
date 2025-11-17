@@ -1,1 +1,1 @@
-rootProject.name = "record-editor-2025-10-21"
+rootProject.name = "code-recorder"
