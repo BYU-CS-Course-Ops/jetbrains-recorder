@@ -251,7 +251,7 @@ class EditorRecordingManager : Disposable {
             timestamp = Instant.now(),
             descriptor = descriptor,
             offset = 0,
-            oldFragment = "",
+            oldFragment = initialText,
             newFragment = initialText
         )
         queue.offer(snapshotEvent)
