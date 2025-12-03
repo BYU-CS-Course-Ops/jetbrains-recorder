@@ -2,7 +2,10 @@ package recorder
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.State
+import com.intellij.openapi.components.Storage
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
@@ -25,11 +28,11 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPOutputStream
 
-/**
- * Manages registration of document listeners used to log editor input while a recording session is active.
- */
+@State(name = "EditorRecordingManagerState", storages = [Storage("editorRecorder.xml")])
 @Service(Service.Level.APP)
-class EditorRecordingManager : Disposable {
+class EditorRecordingManager :
+    Disposable,
+    PersistentStateComponent<EditorRecordingManager.State> {
     private val logger = Logger.getInstance(EditorRecordingManager::class.java)
     private val eventMulticaster = EditorFactory.getInstance().eventMulticaster
     private var listener: DocumentListener? = null
@@ -37,6 +40,7 @@ class EditorRecordingManager : Disposable {
     private var workerThread: Thread? = null
     private var workspaceRoots: List<Path> = emptyList()
     private val recordedInitialStateKeys: MutableSet<String> = mutableSetOf()
+    private var desiredRecordingState: Boolean = false
 
     companion object {
         val RECORDING_STATE_TOPIC: Topic<RecordingStateListener> =
@@ -44,7 +48,30 @@ class EditorRecordingManager : Disposable {
         private const val BATCH_IDLE_MILLIS = 1000L
     }
 
+    data class State(var wasRecording: Boolean = false)
+
+    override fun getState(): State = State(desiredRecordingState)
+
+    override fun loadState(state: State) {
+        desiredRecordingState = state.wasRecording
+        if (desiredRecordingState) {
+            scheduleRecordingResume()
+        }
+    }
+
+    private fun scheduleRecordingResume() {
+        ApplicationManager.getApplication().invokeLater {
+            if (desiredRecordingState && !isRecording()) {
+                startRecording()
+            }
+        }
+    }
+
+    /**
+     * Manages registration of document listeners used to log editor input while a recording session is active.
+     */
     fun startRecording() {
+        desiredRecordingState = true
         if (listener != null) {
             logger.warn("Recording already active; ignoring start request")
             return
@@ -84,7 +111,10 @@ class EditorRecordingManager : Disposable {
         logger.info("Editor recording started")
     }
 
-    fun stopRecording() {
+    fun stopRecording(updatePreference: Boolean = true) {
+        if (updatePreference) {
+            desiredRecordingState = false
+        }
         val toRemove = listener
         if (toRemove == null) {
             logger.warn("Recording not active; ignoring stop request")
@@ -108,7 +138,7 @@ class EditorRecordingManager : Disposable {
 
     override fun dispose() {
         if (listener != null) {
-            stopRecording()
+            stopRecording(updatePreference = false)
         }
     }
 
@@ -224,6 +254,12 @@ class EditorRecordingManager : Disposable {
     private fun shouldRecord(virtualFile: VirtualFile?): Boolean {
         if (virtualFile == null || !virtualFile.isInLocalFileSystem) {
             return false
+        }
+        if (workspaceRoots.isEmpty()) {
+            workspaceRoots = collectWorkspaceRoots()
+            if (workspaceRoots.isEmpty()) {
+                return false
+            }
         }
         val filePath = try {
             Paths.get(virtualFile.path).normalize()
