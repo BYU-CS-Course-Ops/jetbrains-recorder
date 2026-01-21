@@ -86,21 +86,25 @@ class EditorRecordingManager :
 
         val documentListener = object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
-                if (event.newFragment.isNotEmpty() || event.oldFragment.isNotEmpty()) {
-                    val virtualFile = FileDocumentManager.getInstance().getFile(event.document)
-                    if (!shouldRecord(virtualFile)) {
-                        return
+                try {
+                    if (event.newFragment.isNotEmpty() || event.oldFragment.isNotEmpty()) {
+                        val virtualFile = FileDocumentManager.getInstance().getFile(event.document)
+                        if (!shouldRecord(virtualFile)) {
+                            return
+                        }
+                        val descriptor = documentDescriptorFor(event.document, virtualFile)
+                        recordInitialStateIfNeeded(event, descriptor)
+                        val queuedEvent = QueuedDocumentChange(
+                            timestamp = Instant.now(),
+                            descriptor = descriptor,
+                            offset = event.offset,
+                            oldFragment = event.oldFragment.toString(),
+                            newFragment = event.newFragment.toString()
+                        )
+                        eventQueue?.offer(queuedEvent)
                     }
-                    val descriptor = documentDescriptorFor(event.document, virtualFile)
-                    recordInitialStateIfNeeded(event, descriptor)
-                    val queuedEvent = QueuedDocumentChange(
-                        timestamp = Instant.now(),
-                        descriptor = descriptor,
-                        offset = event.offset,
-                        oldFragment = event.oldFragment.toString(),
-                        newFragment = event.newFragment.toString()
-                    )
-                    eventQueue?.offer(queuedEvent)
+                } catch (t: Throwable) {
+                    logger.error("Failed to record document change event", t)
                 }
             }
         }
@@ -169,6 +173,7 @@ class EditorRecordingManager :
         queue: BlockingQueue<QueueItem>,
         writer: RecordingEventWriter
     ): Thread {
+        logger.info("Starting recording worker thread")
         return Thread({
             val batch = mutableListOf<QueuedDocumentChange>()
             try {
@@ -194,6 +199,8 @@ class EditorRecordingManager :
                 }
             } catch (ie: InterruptedException) {
                 Thread.currentThread().interrupt()
+            } catch (t: Throwable) {
+                logger.error("Recording worker encountered an unexpected error; attempting to flush remaining events.", t)
             } finally {
                 flushBatch(batch, writer)
                 writer.close()
