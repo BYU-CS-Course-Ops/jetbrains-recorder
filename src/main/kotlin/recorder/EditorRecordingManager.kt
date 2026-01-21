@@ -262,6 +262,10 @@ class EditorRecordingManager :
         if (virtualFile == null || !virtualFile.isInLocalFileSystem) {
             return false
         }
+        // Exclude recording files themselves to prevent recursive recording
+        if (virtualFile.name.contains(".recording.jsonl.gz")) {
+            return false
+        }
         if (workspaceRoots.isEmpty()) {
             workspaceRoots = collectWorkspaceRoots()
             if (workspaceRoots.isEmpty()) {
