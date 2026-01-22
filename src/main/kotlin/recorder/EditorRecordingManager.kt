@@ -45,23 +45,25 @@ class EditorRecordingManager :
     companion object {
         val RECORDING_STATE_TOPIC: Topic<RecordingStateListener> =
             Topic.create("Record Editor Recording State", RecordingStateListener::class.java)
+        val DOCUMENT_RECORDED_TOPIC: Topic<DocumentRecordedListener> =
+            Topic.create("Document Change Recorded", DocumentRecordedListener::class.java)
         private const val BATCH_IDLE_MILLIS = 1000L
     }
 
-    data class State(var wasRecording: Boolean = false)
+    data class State(var alwaysRecord: Boolean = true)
 
-    override fun getState(): State = State(desiredRecordingState)
+    override fun getState(): State = State(alwaysRecord = true)
 
     override fun loadState(state: State) {
-        desiredRecordingState = state.wasRecording
-        if (desiredRecordingState) {
-            scheduleRecordingResume()
-        }
+        // Always record - ignore saved state
+        desiredRecordingState = true
+        scheduleRecordingResume()
     }
 
     private fun scheduleRecordingResume() {
         ApplicationManager.getApplication().invokeLater {
             if (desiredRecordingState && !isRecording()) {
+                logger.info("Attempting to auto-start recording after IDE/plugin initialization")
                 startRecording()
             }
         }
@@ -80,6 +82,13 @@ class EditorRecordingManager :
         val queue = LinkedBlockingQueue<QueueItem>()
         eventQueue = queue
         workspaceRoots = collectWorkspaceRoots()
+
+        if (workspaceRoots.isEmpty()) {
+            logger.warn("No workspace roots found; recording listener will be active but may not record until projects are opened")
+        } else {
+            logger.info("Recording will monitor ${workspaceRoots.size} workspace root(s)")
+        }
+
         val writer = RecordingEventWriter()
         workerThread = startWorker(queue, writer)
         recordedInitialStateKeys.clear()
@@ -102,6 +111,7 @@ class EditorRecordingManager :
                             newFragment = event.newFragment.toString()
                         )
                         eventQueue?.offer(queuedEvent)
+                        notifyDocumentRecorded()
                     }
                 } catch (t: Throwable) {
                     logger.error("Failed to record document change event", t)
@@ -266,11 +276,9 @@ class EditorRecordingManager :
         if (virtualFile.name.contains(".recording.jsonl.gz")) {
             return false
         }
+        // Don't record if we don't have workspace roots yet
         if (workspaceRoots.isEmpty()) {
-            workspaceRoots = collectWorkspaceRoots()
-            if (workspaceRoots.isEmpty()) {
-                return false
-            }
+            return false
         }
         val filePath = try {
             Paths.get(virtualFile.path).normalize()
@@ -280,13 +288,24 @@ class EditorRecordingManager :
             }
             return false
         }
-        if (workspaceRoots.isEmpty()) {
-            return false
-        }
         return workspaceRoots.any { filePath.startsWith(it) }
     }
 
     fun isRecording(): Boolean = listener != null
+
+    /**
+     * Refreshes the workspace roots if recording is active.
+     * Useful when projects are opened after recording has already started.
+     */
+    fun refreshWorkspaceRoots() {
+        if (!isRecording()) {
+            return
+        }
+        val oldSize = workspaceRoots.size
+        val newRoots = collectWorkspaceRoots()
+        workspaceRoots = newRoots
+        logger.info("Refreshed workspace roots: $oldSize -> ${newRoots.size}")
+    }
 
     private fun recordInitialStateIfNeeded(event: DocumentEvent, descriptor: DocumentDescriptor) {
         val queue = eventQueue ?: return
@@ -390,5 +409,11 @@ class EditorRecordingManager :
         ApplicationManager.getApplication().messageBus
             .syncPublisher(RECORDING_STATE_TOPIC)
             .recordingStateChanged(isRecording)
+    }
+
+    private fun notifyDocumentRecorded() {
+        ApplicationManager.getApplication().messageBus
+            .syncPublisher(DOCUMENT_RECORDED_TOPIC)
+            .documentChangeRecorded()
     }
 }

@@ -34,5 +34,6 @@
     <extensions defaultExtensionNs="com.intellij">
         <!-- Add your extensions here -->
         <statusBarWidgetFactory implementation="status.RecordingStatusWidgetFactory"/>
+        <postStartupActivity implementation="recorder.RecordingStartupActivity"/>
     </extensions>
 </idea-plugin>
