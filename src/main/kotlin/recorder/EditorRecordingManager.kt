@@ -50,14 +50,15 @@ class EditorRecordingManager :
         private const val BATCH_IDLE_MILLIS = 1000L
     }
 
-    data class State(var alwaysRecord: Boolean = true)
+    data class State(var wasRecording: Boolean = false)
 
-    override fun getState(): State = State(alwaysRecord = true)
+    override fun getState(): State = State(desiredRecordingState)
 
     override fun loadState(state: State) {
-        // Always record - ignore saved state
-        desiredRecordingState = true
-        scheduleRecordingResume()
+        desiredRecordingState = state.wasRecording
+        if (desiredRecordingState) {
+            scheduleRecordingResume()
+        }
     }
 
     private fun scheduleRecordingResume() {
@@ -73,11 +74,11 @@ class EditorRecordingManager :
      * Manages registration of document listeners used to log editor input while a recording session is active.
      */
     fun startRecording() {
-        desiredRecordingState = true
         if (listener != null) {
             logger.warn("Recording already active; ignoring start request")
             return
         }
+        desiredRecordingState = true
 
         val queue = LinkedBlockingQueue<QueueItem>()
         eventQueue = queue
@@ -138,9 +139,7 @@ class EditorRecordingManager :
         eventMulticaster.removeDocumentListener(toRemove)
         listener = null
         val queue = eventQueue
-        if (queue != null) {
-            queue.offer(StopSignal)
-        }
+        queue?.offer(StopSignal)
         workerThread?.joinSafely()
         workerThread = null
         eventQueue = null
@@ -188,8 +187,7 @@ class EditorRecordingManager :
             val batch = mutableListOf<QueuedDocumentChange>()
             try {
                 while (true) {
-                    val item = queue.poll(BATCH_IDLE_MILLIS, TimeUnit.MILLISECONDS)
-                    when (item) {
+                    when (val item = queue.poll(BATCH_IDLE_MILLIS, TimeUnit.MILLISECONDS)) {
                         is QueuedDocumentChange -> {
                             if (batch.isNotEmpty() && batch.first().descriptor.id != item.descriptor.id) {
                                 flushBatch(batch, writer)
@@ -207,7 +205,7 @@ class EditorRecordingManager :
                         }
                     }
                 }
-            } catch (ie: InterruptedException) {
+            } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             } catch (t: Throwable) {
                 logger.error("Recording worker encountered an unexpected error; attempting to flush remaining events.", t)
@@ -236,7 +234,7 @@ class EditorRecordingManager :
     private fun Thread.joinSafely() {
         try {
             join()
-        } catch (ie: InterruptedException) {
+        } catch (_: InterruptedException) {
             interrupt()
             Thread.currentThread().interrupt()
         }
