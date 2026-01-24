@@ -208,7 +208,10 @@ class EditorRecordingManager :
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             } catch (t: Throwable) {
-                logger.error("Recording worker encountered an unexpected error; attempting to flush remaining events.", t)
+                logger.error(
+                    "Recording worker encountered an unexpected error; attempting to flush remaining events.",
+                    t
+                )
             } finally {
                 flushBatch(batch, writer)
                 writer.close()
@@ -375,7 +378,10 @@ class EditorRecordingManager :
                     writer.flush()
                 }
             } catch (ioe: IOException) {
-                logger.warn("Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.", ioe)
+                logger.warn(
+                    "Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.",
+                    ioe
+                )
                 batch.forEach { logQueuedEvent(it) }
             }
         }
