@@ -359,18 +359,20 @@ class EditorRecordingManager :
                 return
             }
             try {
-                Files.newOutputStream(
-                    targetPath,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND,
-                    StandardOpenOption.WRITE
-                ).use { fileStream ->
-                    GZIPOutputStream(fileStream).bufferedWriter(StandardCharsets.UTF_8).use { gzipWriter ->
-                        batch.forEach { change ->
-                            gzipWriter.write(formatChangeAsJson(change))
-                            gzipWriter.newLine()
-                        }
+                // Use buffered GZIP output with larger buffer for more reliable compression
+                GZIPOutputStream(
+                    Files.newOutputStream(
+                        targetPath,
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.APPEND,
+                        StandardOpenOption.WRITE
+                    )
+                ).bufferedWriter(StandardCharsets.UTF_8).use { writer ->
+                    batch.forEach { change ->
+                        writer.write(formatChangeAsJson(change))
+                        writer.newLine()
                     }
+                    writer.flush()
                 }
             } catch (ioe: IOException) {
                 logger.warn("Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.", ioe)
