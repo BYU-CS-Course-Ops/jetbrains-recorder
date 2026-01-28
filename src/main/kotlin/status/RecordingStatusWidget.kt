@@ -11,6 +11,7 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.ui.JBUI
+import recorder.DocumentRecordedListener
 import recorder.EditorRecordingManager
 import recorder.RecordingStateListener
 import java.awt.Color
@@ -20,6 +21,7 @@ import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.Timer
 
 class RecordingStatusWidgetFactory : StatusBarWidgetFactory {
     override fun getId(): String = "record-editor-status-widget"
@@ -40,7 +42,8 @@ class RecordingStatusWidgetFactory : StatusBarWidgetFactory {
 private class RecordingStatusWidget(private val project: Project) :
     CustomStatusBarWidget,
     StatusBarWidget.Multiframe,
-    RecordingStateListener {
+    RecordingStateListener,
+    DocumentRecordedListener {
 
     private val panel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.X_AXIS)
@@ -54,6 +57,8 @@ private class RecordingStatusWidget(private val project: Project) :
     private var statusBar: StatusBar? = null
     private var connection: MessageBusConnection? = null
     private var isRecording: Boolean = false
+    private var flashTimer: Timer? = null
+    private var isFlashing: Boolean = false
 
     init {
         indicatorDot.border = JBUI.Borders.emptyRight(4)
@@ -76,6 +81,8 @@ private class RecordingStatusWidget(private val project: Project) :
     }
 
     override fun dispose() {
+        flashTimer?.stop()
+        flashTimer = null
         connection?.disconnect()
         connection = null
         statusBar = null
@@ -91,9 +98,39 @@ private class RecordingStatusWidget(private val project: Project) :
         }
     }
 
+    override fun documentChangeRecorded() {
+        if (isRecording && !isFlashing) {
+            ApplicationManager.getApplication().invokeLater {
+                flashIndicator()
+            }
+        }
+    }
+
+    private fun flashIndicator() {
+        if (isFlashing) return
+        isFlashing = true
+
+        // Flash to bright green
+        indicatorDot.foreground = FLASH_COLOR
+
+        // Reset timer if it exists
+        flashTimer?.stop()
+
+        // Create timer to restore normal color after a short delay
+        flashTimer = Timer(150) {
+            indicatorDot.foreground = if (isRecording) ACTIVE_COLOR else INACTIVE_COLOR
+            isFlashing = false
+            flashTimer?.stop()
+        }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
     private fun subscribeToRecordingUpdates() {
         connection = ApplicationManager.getApplication().messageBus.connect(this).also { bus ->
             bus.subscribe(EditorRecordingManager.RECORDING_STATE_TOPIC, this)
+            bus.subscribe(EditorRecordingManager.DOCUMENT_RECORDED_TOPIC, this)
         }
     }
 
@@ -119,5 +156,6 @@ private class RecordingStatusWidget(private val project: Project) :
     companion object {
         private val ACTIVE_COLOR = JBColor(Color(0x2E7D32), Color(0x81C784))
         private val INACTIVE_COLOR = JBColor(Color(0xB71C1C), Color(0xEF9A9A))
+        private val FLASH_COLOR = JBColor(Color(0x00E676), Color(0x69F0AE)) // Bright green flash
     }
 }

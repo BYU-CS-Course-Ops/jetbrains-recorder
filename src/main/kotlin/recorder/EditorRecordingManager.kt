@@ -45,6 +45,8 @@ class EditorRecordingManager :
     companion object {
         val RECORDING_STATE_TOPIC: Topic<RecordingStateListener> =
             Topic.create("Record Editor Recording State", RecordingStateListener::class.java)
+        val DOCUMENT_RECORDED_TOPIC: Topic<DocumentRecordedListener> =
+            Topic.create("Document Change Recorded", DocumentRecordedListener::class.java)
         private const val BATCH_IDLE_MILLIS = 1000L
     }
 
@@ -62,6 +64,7 @@ class EditorRecordingManager :
     private fun scheduleRecordingResume() {
         ApplicationManager.getApplication().invokeLater {
             if (desiredRecordingState && !isRecording()) {
+                logger.info("Attempting to auto-start recording after IDE/plugin initialization")
                 startRecording()
             }
         }
@@ -71,15 +74,22 @@ class EditorRecordingManager :
      * Manages registration of document listeners used to log editor input while a recording session is active.
      */
     fun startRecording() {
-        desiredRecordingState = true
         if (listener != null) {
             logger.warn("Recording already active; ignoring start request")
             return
         }
+        desiredRecordingState = true
 
         val queue = LinkedBlockingQueue<QueueItem>()
         eventQueue = queue
         workspaceRoots = collectWorkspaceRoots()
+
+        if (workspaceRoots.isEmpty()) {
+            logger.warn("No workspace roots found; recording listener will be active but may not record until projects are opened")
+        } else {
+            logger.info("Recording will monitor ${workspaceRoots.size} workspace root(s)")
+        }
+
         val writer = RecordingEventWriter()
         workerThread = startWorker(queue, writer)
         recordedInitialStateKeys.clear()
@@ -102,6 +112,7 @@ class EditorRecordingManager :
                             newFragment = event.newFragment.toString()
                         )
                         eventQueue?.offer(queuedEvent)
+                        notifyDocumentRecorded()
                     }
                 } catch (t: Throwable) {
                     logger.error("Failed to record document change event", t)
@@ -128,9 +139,7 @@ class EditorRecordingManager :
         eventMulticaster.removeDocumentListener(toRemove)
         listener = null
         val queue = eventQueue
-        if (queue != null) {
-            queue.offer(StopSignal)
-        }
+        queue?.offer(StopSignal)
         workerThread?.joinSafely()
         workerThread = null
         eventQueue = null
@@ -178,8 +187,7 @@ class EditorRecordingManager :
             val batch = mutableListOf<QueuedDocumentChange>()
             try {
                 while (true) {
-                    val item = queue.poll(BATCH_IDLE_MILLIS, TimeUnit.MILLISECONDS)
-                    when (item) {
+                    when (val item = queue.poll(BATCH_IDLE_MILLIS, TimeUnit.MILLISECONDS)) {
                         is QueuedDocumentChange -> {
                             if (batch.isNotEmpty() && batch.first().descriptor.id != item.descriptor.id) {
                                 flushBatch(batch, writer)
@@ -197,10 +205,13 @@ class EditorRecordingManager :
                         }
                     }
                 }
-            } catch (ie: InterruptedException) {
+            } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             } catch (t: Throwable) {
-                logger.error("Recording worker encountered an unexpected error; attempting to flush remaining events.", t)
+                logger.error(
+                    "Recording worker encountered an unexpected error; attempting to flush remaining events.",
+                    t
+                )
             } finally {
                 flushBatch(batch, writer)
                 writer.close()
@@ -226,7 +237,7 @@ class EditorRecordingManager :
     private fun Thread.joinSafely() {
         try {
             join()
-        } catch (ie: InterruptedException) {
+        } catch (_: InterruptedException) {
             interrupt()
             Thread.currentThread().interrupt()
         }
@@ -266,11 +277,9 @@ class EditorRecordingManager :
         if (virtualFile.name.contains(".recording.jsonl.gz")) {
             return false
         }
+        // Don't record if we don't have workspace roots yet
         if (workspaceRoots.isEmpty()) {
-            workspaceRoots = collectWorkspaceRoots()
-            if (workspaceRoots.isEmpty()) {
-                return false
-            }
+            return false
         }
         val filePath = try {
             Paths.get(virtualFile.path).normalize()
@@ -280,13 +289,24 @@ class EditorRecordingManager :
             }
             return false
         }
-        if (workspaceRoots.isEmpty()) {
-            return false
-        }
         return workspaceRoots.any { filePath.startsWith(it) }
     }
 
     fun isRecording(): Boolean = listener != null
+
+    /**
+     * Refreshes the workspace roots if recording is active.
+     * Useful when projects are opened after recording has already started.
+     */
+    fun refreshWorkspaceRoots() {
+        if (!isRecording()) {
+            return
+        }
+        val oldSize = workspaceRoots.size
+        val newRoots = collectWorkspaceRoots()
+        workspaceRoots = newRoots
+        logger.info("Refreshed workspace roots: $oldSize -> ${newRoots.size}")
+    }
 
     private fun recordInitialStateIfNeeded(event: DocumentEvent, descriptor: DocumentDescriptor) {
         val queue = eventQueue ?: return
@@ -342,21 +362,26 @@ class EditorRecordingManager :
                 return
             }
             try {
-                Files.newOutputStream(
-                    targetPath,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND,
-                    StandardOpenOption.WRITE
-                ).use { fileStream ->
-                    GZIPOutputStream(fileStream).bufferedWriter(StandardCharsets.UTF_8).use { gzipWriter ->
-                        batch.forEach { change ->
-                            gzipWriter.write(formatChangeAsJson(change))
-                            gzipWriter.newLine()
-                        }
+                // Use buffered GZIP output with larger buffer for more reliable compression
+                GZIPOutputStream(
+                    Files.newOutputStream(
+                        targetPath,
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.APPEND,
+                        StandardOpenOption.WRITE
+                    )
+                ).bufferedWriter(StandardCharsets.UTF_8).use { writer ->
+                    batch.forEach { change ->
+                        writer.write(formatChangeAsJson(change))
+                        writer.newLine()
                     }
+                    writer.flush()
                 }
             } catch (ioe: IOException) {
-                logger.warn("Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.", ioe)
+                logger.warn(
+                    "Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.",
+                    ioe
+                )
                 batch.forEach { logQueuedEvent(it) }
             }
         }
@@ -390,5 +415,11 @@ class EditorRecordingManager :
         ApplicationManager.getApplication().messageBus
             .syncPublisher(RECORDING_STATE_TOPIC)
             .recordingStateChanged(isRecording)
+    }
+
+    private fun notifyDocumentRecorded() {
+        ApplicationManager.getApplication().messageBus
+            .syncPublisher(DOCUMENT_RECORDED_TOPIC)
+            .documentChangeRecorded()
     }
 }
