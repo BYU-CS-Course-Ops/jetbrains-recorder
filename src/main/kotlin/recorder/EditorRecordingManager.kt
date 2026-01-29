@@ -41,6 +41,8 @@ class EditorRecordingManager :
     private var workspaceRoots: List<Path> = emptyList()
     private val recordedInitialStateKeys: MutableSet<String> = mutableSetOf()
     private var desiredRecordingState: Boolean = false
+    private val activeRecordingPaths: MutableSet<Path> = mutableSetOf()
+
 
     companion object {
         val RECORDING_STATE_TOPIC: Topic<RecordingStateListener> =
@@ -93,6 +95,7 @@ class EditorRecordingManager :
         val writer = RecordingEventWriter()
         workerThread = startWorker(queue, writer)
         recordedInitialStateKeys.clear()
+        activeRecordingPaths.clear()
 
         val documentListener = object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
@@ -145,6 +148,7 @@ class EditorRecordingManager :
         eventQueue = null
         workspaceRoots = emptyList()
         recordedInitialStateKeys.clear()
+        activeRecordingPaths.clear()
         notifyRecordingStateChanged(false)
         logger.info("Editor recording stopped")
     }
@@ -193,6 +197,15 @@ class EditorRecordingManager :
                                 flushBatch(batch, writer)
                             }
                             batch.add(item)
+                            // Track this path for status event broadcasting
+                            item.descriptor.outputPath?.let { activeRecordingPaths.add(it) }
+                        }
+
+                        is QueuedStatusEvent -> {
+                            // Flush any pending batch first
+                            flushBatch(batch, writer)
+                            // Write status event to all active recording files
+                            writer.writeStatusEvent(item, activeRecordingPaths)
                         }
 
                         StopSignal -> {
@@ -247,10 +260,35 @@ class EditorRecordingManager :
         logger.info(formatChangeAsJson(change))
     }
 
-    private fun formatChangeAsJson(change: QueuedDocumentChange): String =
-        """{"timestamp":"${
-            change.timestamp.toString().escapeJson()
-        }","document":"${change.descriptor.displayName.escapeJson()}","offset":${change.offset},"oldFragment":"${change.oldFragment.escapeJson()}","newFragment":"${change.newFragment.escapeJson()}"}"""
+    private fun formatChangeAsJson(change: QueuedDocumentChange): String {
+        val timestamp = change.timestamp.toString().escapeJson()
+        val document = change.descriptor.displayName.escapeJson()
+        val offset = change.offset
+        val oldFragment = change.oldFragment.escapeJson()
+        val newFragment = change.newFragment.escapeJson()
+        return """{"type":"edit","timestamp":"$timestamp","document":"$document","offset":$offset,"oldFragment":"$oldFragment","newFragment":"$newFragment"}"""
+    }
+
+    private fun formatActiveStatusAsJson(isActive: Boolean): String =
+        formatStatusEventAsJson(Instant.now(), "activeEdits", mapOf("active" to isActive))
+
+    /**
+     * Formats a status event as JSON. Reusable for different status types.
+     * @param timestamp The timestamp for the event
+     * @param statusType The type of status event (e.g., "focusStatus", "activeEdits", "cursorPosition")
+     * @param fields Key-value pairs to include in the JSON object
+     */
+    private fun formatStatusEventAsJson(timestamp: Instant, statusType: String, fields: Map<String, Any>): String {
+        val fieldsJson = fields.entries.joinToString(",") { (key, value) ->
+            when (value) {
+                is String -> "\"$key\":\"${value.escapeJson()}\""
+                is Boolean, is Number -> "\"$key\":$value"
+                else -> "\"$key\":\"${value.toString().escapeJson()}\""
+            }
+        }
+        val suffix = if (fieldsJson.isNotEmpty()) ",$fieldsJson" else ""
+        return """{"type":"$statusType","timestamp":"${timestamp.toString().escapeJson()}"$suffix}"""
+    }
 
     private fun collectWorkspaceRoots(): List<Path> {
         val openProjects = ProjectManager.getInstance().openProjects
@@ -293,6 +331,19 @@ class EditorRecordingManager :
     }
 
     fun isRecording(): Boolean = listener != null
+
+    /**
+     * Queues a status event to be written to all active recording files.
+     * Used for events like focus changes that apply globally.
+     */
+    fun queueStatusEvent(statusType: String, vararg fields: Pair<String, Any>) {
+        val queue = eventQueue ?: return
+        queue.offer(QueuedStatusEvent(
+            timestamp = Instant.now(),
+            statusType = statusType,
+            fields = fields.toMap()
+        ))
+    }
 
     /**
      * Refreshes the workspace roots if recording is active.
@@ -346,6 +397,12 @@ class EditorRecordingManager :
         val newFragment: String
     ) : QueueItem
 
+    private data class QueuedStatusEvent(
+        val timestamp: Instant,
+        val statusType: String,
+        val fields: Map<String, Any>
+    ) : QueueItem
+
     private data object StopSignal : QueueItem
 
     private data class DocumentDescriptor(
@@ -383,6 +440,32 @@ class EditorRecordingManager :
                     ioe
                 )
                 batch.forEach { logQueuedEvent(it) }
+            }
+        }
+
+        fun writeStatusEvent(event: QueuedStatusEvent, paths: Set<Path>) {
+            if (paths.isEmpty()) {
+                logger.info(formatStatusEventAsJson(event.timestamp, event.statusType, event.fields))
+                return
+            }
+            val jsonLine = formatStatusEventAsJson(event.timestamp, event.statusType, event.fields)
+            for (path in paths) {
+                try {
+                    GZIPOutputStream(
+                        Files.newOutputStream(
+                            path,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.APPEND,
+                            StandardOpenOption.WRITE
+                        )
+                    ).bufferedWriter(StandardCharsets.UTF_8).use { writer ->
+                        writer.write(jsonLine)
+                        writer.newLine()
+                        writer.flush()
+                    }
+                } catch (ioe: IOException) {
+                    logger.warn("Failed to write status event to $path", ioe)
+                }
             }
         }
 

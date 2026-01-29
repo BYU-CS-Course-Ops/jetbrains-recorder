@@ -36,4 +36,9 @@
         <statusBarWidgetFactory implementation="status.RecordingStatusWidgetFactory"/>
         <postStartupActivity implementation="recorder.RecordingStartupActivity"/>
     </extensions>
+
+    <applicationListeners>
+        <listener class="recorder.FocusStatusListener"
+                  topic="com.intellij.openapi.application.ApplicationActivationListener"/>
+    </applicationListeners>
 </idea-plugin>
