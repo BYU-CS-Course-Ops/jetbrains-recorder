@@ -268,10 +268,7 @@ class EditorRecordingManager :
         val newFragment = change.newFragment.escapeJson()
         return """{"type":"edit","timestamp":"$timestamp","document":"$document","offset":$offset,"oldFragment":"$oldFragment","newFragment":"$newFragment"}"""
     }
-
-    private fun formatActiveStatusAsJson(isActive: Boolean): String =
-        formatStatusEventAsJson(Instant.now(), "activeEdits", mapOf("active" to isActive))
-
+    
     /**
      * Formats a status event as JSON. Reusable for different status types.
      * @param timestamp The timestamp for the event
