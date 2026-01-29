@@ -49,6 +49,11 @@ intellijPlatform {
             </ul>
         """.trimIndent()
     }
+    pluginVerification {
+        ides {
+            create("IC", "2025.1")
+        }
+    }
 }
 
 tasks {

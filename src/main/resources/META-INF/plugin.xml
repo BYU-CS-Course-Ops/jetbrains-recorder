@@ -33,7 +33,7 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- Add your extensions here -->
-        <statusBarWidgetFactory implementation="status.RecordingStatusWidgetFactory"/>
+        <statusBarWidgetFactory id="record-editor-status-widget" implementation="status.RecordingStatusWidgetFactory"/>
         <postStartupActivity implementation="recorder.RecordingStartupActivity"/>
     </extensions>
 
