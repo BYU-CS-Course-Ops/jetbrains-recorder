@@ -182,6 +182,61 @@ class EditorRecordingManager :
         }
     }
 
+    /**
+     * Formats a value as a JSON field value (with proper escaping and quoting).
+     */
+    private fun formatJsonValue(value: Any): String = when (value) {
+        is String -> "\"${value.escapeJson()}\""
+        is Boolean, is Number -> value.toString()
+        else -> "\"${value.toString().escapeJson()}\""
+    }
+
+    /**
+     * Builds a JSON object string from a map of fields.
+     */
+    private fun buildJsonObject(fields: Map<String, Any>): String =
+        fields.entries.joinToString(",", "{", "}") { (key, value) ->
+            "\"$key\":${formatJsonValue(value)}"
+        }
+
+    /**
+     * Safely parses a path string, returning null if invalid.
+     */
+    private fun parsePathSafely(pathString: String, context: String? = null): Path? =
+        try {
+            Paths.get(pathString).normalize()
+        } catch (ipe: InvalidPathException) {
+            if (context != null) {
+                logger.warn("$context: $pathString", ipe)
+            }
+            null
+        }
+
+    /**
+     * Writes JSON lines to a GZIP file, handling the common output stream setup.
+     */
+    private fun writeToGzipFile(path: Path, lines: List<String>): Boolean =
+        try {
+            GZIPOutputStream(
+                Files.newOutputStream(
+                    path,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND,
+                    StandardOpenOption.WRITE
+                )
+            ).bufferedWriter(StandardCharsets.UTF_8).use { writer ->
+                lines.forEach { line ->
+                    writer.write(line)
+                    writer.newLine()
+                }
+                writer.flush()
+            }
+            true
+        } catch (ioe: IOException) {
+            logger.warn("Failed to write to $path", ioe)
+            false
+        }
+
     private fun startWorker(
         queue: BlockingQueue<QueueItem>,
         writer: RecordingEventWriter
@@ -260,48 +315,41 @@ class EditorRecordingManager :
         logger.info(formatChangeAsJson(change))
     }
 
-    private fun formatChangeAsJson(change: QueuedDocumentChange): String {
-        val timestamp = change.timestamp.toString().escapeJson()
-        val document = change.descriptor.displayName.escapeJson()
-        val offset = change.offset
-        val oldFragment = change.oldFragment.escapeJson()
-        val newFragment = change.newFragment.escapeJson()
-        return """{"type":"edit","timestamp":"$timestamp","document":"$document","offset":$offset,"oldFragment":"$oldFragment","newFragment":"$newFragment"}"""
-    }
-    
+    private fun formatChangeAsJson(change: QueuedDocumentChange): String = buildJsonObject(
+        mapOf(
+            "type" to "edit",
+            "editor" to "jetbrains",
+            "timestamp" to change.timestamp.toString(),
+            "document" to change.descriptor.displayName,
+            "offset" to change.offset,
+            "oldFragment" to change.oldFragment,
+            "newFragment" to change.newFragment
+        )
+    )
+
     /**
      * Formats a status event as JSON. Reusable for different status types.
      * @param timestamp The timestamp for the event
      * @param statusType The type of status event (e.g., "focusStatus", "activeEdits", "cursorPosition")
      * @param fields Key-value pairs to include in the JSON object
      */
-    private fun formatStatusEventAsJson(timestamp: Instant, statusType: String, fields: Map<String, Any>): String {
-        val fieldsJson = fields.entries.joinToString(",") { (key, value) ->
-            when (value) {
-                is String -> "\"$key\":\"${value.escapeJson()}\""
-                is Boolean, is Number -> "\"$key\":$value"
-                else -> "\"$key\":\"${value.toString().escapeJson()}\""
-            }
-        }
-        val suffix = if (fieldsJson.isNotEmpty()) ",$fieldsJson" else ""
-        return """{"type":"$statusType","timestamp":"${timestamp.toString().escapeJson()}"$suffix}"""
-    }
+    private fun formatStatusEventAsJson(timestamp: Instant, statusType: String, fields: Map<String, Any>): String =
+        buildJsonObject(
+            mapOf(
+                "type" to statusType,
+                "editor" to "jetbrains",
+                "timestamp" to timestamp.toString()
+            ) + fields
+        )
 
     private fun collectWorkspaceRoots(): List<Path> {
         val openProjects = ProjectManager.getInstance().openProjects
         if (openProjects.isEmpty()) {
             return emptyList()
         }
-        val roots = mutableListOf<Path>()
-        for (project in openProjects) {
-            val basePath = project.basePath ?: continue
-            try {
-                roots.add(Paths.get(basePath).normalize())
-            } catch (ipe: InvalidPathException) {
-                logger.warn("Skipping project with invalid base path: $basePath", ipe)
-            }
+        return openProjects.mapNotNull { project ->
+            project.basePath?.let { parsePathSafely(it, "Skipping project with invalid base path") }
         }
-        return roots
     }
 
     private fun shouldRecord(virtualFile: VirtualFile?): Boolean {
@@ -316,14 +364,7 @@ class EditorRecordingManager :
         if (workspaceRoots.isEmpty()) {
             return false
         }
-        val filePath = try {
-            Paths.get(virtualFile.path).normalize()
-        } catch (ipe: InvalidPathException) {
-            if (logger.isDebugEnabled) {
-                logger.debug("Skipping document with invalid path: ${virtualFile.path}", ipe)
-            }
-            return false
-        }
+        val filePath = parsePathSafely(virtualFile.path) ?: return false
         return workspaceRoots.any { filePath.startsWith(it) }
     }
 
@@ -335,11 +376,13 @@ class EditorRecordingManager :
      */
     fun queueStatusEvent(statusType: String, vararg fields: Pair<String, Any>) {
         val queue = eventQueue ?: return
-        queue.offer(QueuedStatusEvent(
-            timestamp = Instant.now(),
-            statusType = statusType,
-            fields = fields.toMap()
-        ))
+        queue.offer(
+            QueuedStatusEvent(
+                timestamp = Instant.now(),
+                statusType = statusType,
+                fields = fields.toMap()
+            )
+        )
     }
 
     /**
@@ -415,54 +458,21 @@ class EditorRecordingManager :
                 batch.forEach { logQueuedEvent(it) }
                 return
             }
-            try {
-                // Use buffered GZIP output with larger buffer for more reliable compression
-                GZIPOutputStream(
-                    Files.newOutputStream(
-                        targetPath,
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.APPEND,
-                        StandardOpenOption.WRITE
-                    )
-                ).bufferedWriter(StandardCharsets.UTF_8).use { writer ->
-                    batch.forEach { change ->
-                        writer.write(formatChangeAsJson(change))
-                        writer.newLine()
-                    }
-                    writer.flush()
-                }
-            } catch (ioe: IOException) {
-                logger.warn(
-                    "Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.",
-                    ioe
-                )
+            val lines = batch.map { formatChangeAsJson(it) }
+            if (!writeToGzipFile(targetPath, lines)) {
+                logger.warn("Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.")
                 batch.forEach { logQueuedEvent(it) }
             }
         }
 
         fun writeStatusEvent(event: QueuedStatusEvent, paths: Set<Path>) {
+            val jsonLine = formatStatusEventAsJson(event.timestamp, event.statusType, event.fields)
             if (paths.isEmpty()) {
-                logger.info(formatStatusEventAsJson(event.timestamp, event.statusType, event.fields))
+                logger.info(jsonLine)
                 return
             }
-            val jsonLine = formatStatusEventAsJson(event.timestamp, event.statusType, event.fields)
             for (path in paths) {
-                try {
-                    GZIPOutputStream(
-                        Files.newOutputStream(
-                            path,
-                            StandardOpenOption.CREATE,
-                            StandardOpenOption.APPEND,
-                            StandardOpenOption.WRITE
-                        )
-                    ).bufferedWriter(StandardCharsets.UTF_8).use { writer ->
-                        writer.write(jsonLine)
-                        writer.newLine()
-                        writer.flush()
-                    }
-                } catch (ioe: IOException) {
-                    logger.warn("Failed to write status event to $path", ioe)
-                }
+                writeToGzipFile(path, listOf(jsonLine))
             }
         }
 
