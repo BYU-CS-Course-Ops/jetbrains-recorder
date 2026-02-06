@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-01-23.1"
+version = "2026-01-28.1"
 
 repositories {
     mavenCentral()
@@ -18,7 +18,7 @@ repositories {
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html
 dependencies {
     intellijPlatform {
-        create("IC", "2025.1.4.1")
+        create("IC", "2025.1")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
 
         // Add necessary plugin dependencies for compilation here, example:
@@ -48,6 +48,11 @@ intellijPlatform {
               <li>Improved workspace root initialization for reliable recording after restarts</li>
             </ul>
         """.trimIndent()
+    }
+    pluginVerification {
+        ides {
+            create("IC", "2025.1")
+        }
     }
 }
 
