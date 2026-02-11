@@ -35,7 +35,13 @@
         <!-- Add your extensions here -->
         <statusBarWidgetFactory id="record-editor-status-widget" implementation="status.RecordingStatusWidgetFactory"/>
         <postStartupActivity implementation="recorder.RecordingStartupActivity"/>
+        <notificationGroup id="CodeRecorder.Notifications" displayType="BALLOON"/>
     </extensions>
+
+    <projectListeners>
+        <listener class="recorder.RecordingFileDetector"
+                  topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
+    </projectListeners>
 
     <applicationListeners>
         <listener class="recorder.FocusStatusListener"

@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-01-28.1"
+version = "2026-02-11.1"
 
 repositories {
     mavenCentral()
