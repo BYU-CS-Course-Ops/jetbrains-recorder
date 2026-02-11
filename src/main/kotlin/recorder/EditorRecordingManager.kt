@@ -150,6 +150,7 @@ class EditorRecordingManager :
         recordedInitialStateKeys.clear()
         activeRecordingPaths.clear()
         notifyRecordingStateChanged(false)
+        RecordingFileDetector.onRecordingStopped()
         logger.info("Editor recording stopped")
     }
 
