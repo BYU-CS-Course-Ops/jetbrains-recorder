@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-02-11.1"
+version = "2026-03-17.1"
 
 repositories {
     mavenCentral()
@@ -17,6 +17,8 @@ repositories {
 // Configure IntelliJ Platform Gradle Plugin
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html
 dependencies {
+    testImplementation(kotlin("test-junit"))
+
     intellijPlatform {
         create("IC", "2025.1")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
@@ -31,9 +33,9 @@ intellijPlatform {
         name = "BYU CS Code Recorder"
 
         description = """
-            Automatically records code changes in your projects. The plugin captures every edit, 
-            deletion, and modification to files without recording your screen. Recording starts 
-            automatically on IDE startup and provides visual feedback with a bright green 
+            Automatically records code changes in your projects. The plugin captures every edit,
+            deletion, and modification to files without recording your screen. Recording starts
+            automatically on IDE startup and provides visual feedback with a bright green
             indicator when edits are recorded.
         """.trimIndent()
 

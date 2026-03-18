@@ -23,9 +23,13 @@ class RecordingStartupActivity : ProjectActivity {
             ApplicationManager.getApplication().invokeLater {
                 val manager = service<EditorRecordingManager>()
 
-                if (manager.isRecording()) {
+                if (!manager.isRecording() && manager.shouldResumeRecording()) {
+                    logger.info("Starting recording after project open: ${project.name}")
+                    manager.startRecording()
+                } else if (manager.isRecording()) {
                     logger.info("Recording already active. Refreshing workspace roots to include project: ${project.name}")
                     manager.refreshWorkspaceRoots()
+                    manager.recordSnapshotsForOpenFiles()
                 }
             }
         }, 500, TimeUnit.MILLISECONDS)

@@ -12,6 +12,7 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.messages.Topic
@@ -39,7 +40,7 @@ class EditorRecordingManager :
     private var eventQueue: BlockingQueue<QueueItem>? = null
     private var workerThread: Thread? = null
     private var workspaceRoots: List<Path> = emptyList()
-    private val recordedInitialStateKeys: MutableSet<String> = mutableSetOf()
+    private val recordingSessionState = RecordingSessionState()
     private var desiredRecordingState: Boolean = false
     private val activeRecordingPaths: MutableSet<Path> = mutableSetOf()
 
@@ -65,10 +66,19 @@ class EditorRecordingManager :
 
     private fun scheduleRecordingResume() {
         ApplicationManager.getApplication().invokeLater {
-            if (desiredRecordingState && !isRecording()) {
-                logger.info("Attempting to auto-start recording after IDE/plugin initialization")
-                startRecording()
+            val shouldAttemptAutoStart = recordingSessionState.shouldAttemptAutoStart(
+                    desiredRecordingState = desiredRecordingState,
+                    isRecording = isRecording(),
+                    openProjectCount = ProjectManager.getInstance().openProjects.size
+                )
+            if (!shouldAttemptAutoStart) {
+                if (desiredRecordingState && !isRecording() && ProjectManager.getInstance().openProjects.isEmpty()) {
+                    logger.info("Deferring auto-start until a project is fully opened")
+                }
+                return@invokeLater
             }
+            logger.info("Attempting to auto-start recording after IDE/plugin initialization")
+            startRecording()
         }
     }
 
@@ -94,7 +104,7 @@ class EditorRecordingManager :
 
         val writer = RecordingEventWriter()
         workerThread = startWorker(queue, writer)
-        recordedInitialStateKeys.clear()
+        recordingSessionState.clear()
         activeRecordingPaths.clear()
 
         val documentListener = object : DocumentListener {
@@ -115,6 +125,7 @@ class EditorRecordingManager :
                             newFragment = event.newFragment.toString()
                         )
                         eventQueue?.offer(queuedEvent)
+                        updateRecordedDocumentState(descriptor, event.document.charsSequence.toString())
                         notifyDocumentRecorded()
                     }
                 } catch (t: Throwable) {
@@ -125,6 +136,7 @@ class EditorRecordingManager :
 
         eventMulticaster.addDocumentListener(documentListener, this)
         listener = documentListener
+        recordSnapshotsForOpenFiles()
         notifyRecordingStateChanged(true)
         logger.info("Editor recording started")
     }
@@ -147,7 +159,7 @@ class EditorRecordingManager :
         workerThread = null
         eventQueue = null
         workspaceRoots = emptyList()
-        recordedInitialStateKeys.clear()
+        recordingSessionState.clear()
         activeRecordingPaths.clear()
         notifyRecordingStateChanged(false)
         RecordingFileDetector.onRecordingStopped()
@@ -400,20 +412,43 @@ class EditorRecordingManager :
         logger.info("Refreshed workspace roots: $oldSize -> ${newRoots.size}")
     }
 
+    fun shouldResumeRecording(): Boolean = desiredRecordingState
+
+    fun recordSnapshotsForOpenFiles() {
+        if (!isRecording()) {
+            return
+        }
+        for (project in ProjectManager.getInstance().openProjects) {
+            val fileEditorManager = FileEditorManager.getInstance(project)
+            for (file in fileEditorManager.openFiles) {
+                recordSnapshotIfFileChanged(file)
+            }
+        }
+    }
+
+    fun recordSnapshotIfFileChanged(file: VirtualFile) {
+        val queue = eventQueue ?: return
+        if (!shouldRecord(file)) {
+            return
+        }
+        val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val descriptor = documentDescriptorFor(document, file)
+        val currentText = document.charsSequence.toString()
+        if (!recordingSessionState.shouldQueueSnapshot(descriptor.id, currentText)) {
+            return
+        }
+        queueSnapshot(queue, descriptor, currentText)
+        recordingSessionState.rememberDocumentState(descriptor.id, currentText)
+    }
+
     private fun recordInitialStateIfNeeded(event: DocumentEvent, descriptor: DocumentDescriptor) {
         val queue = eventQueue ?: return
-        if (!recordedInitialStateKeys.add(descriptor.id)) {
+        if (recordingSessionState.hasDocumentState(descriptor.id)) {
             return
         }
         val initialText = computeDocumentTextBeforeChange(event)
-        val snapshotEvent = QueuedDocumentChange(
-            timestamp = Instant.now(),
-            descriptor = descriptor,
-            offset = 0,
-            oldFragment = initialText,
-            newFragment = initialText
-        )
-        queue.offer(snapshotEvent)
+        queueSnapshot(queue, descriptor, initialText)
+        recordingSessionState.rememberDocumentState(descriptor.id, initialText)
     }
 
     private fun computeDocumentTextBeforeChange(event: DocumentEvent): String {
@@ -426,6 +461,21 @@ class EditorRecordingManager :
         val replaceEnd = (replaceStart + event.newFragment.length).coerceAtMost(builder.length)
         builder.replace(replaceStart, replaceEnd, event.oldFragment.toString())
         return builder.toString()
+    }
+
+    private fun queueSnapshot(queue: BlockingQueue<QueueItem>, descriptor: DocumentDescriptor, text: String) {
+        val snapshotEvent = QueuedDocumentChange(
+            timestamp = Instant.now(),
+            descriptor = descriptor,
+            offset = 0,
+            oldFragment = text,
+            newFragment = text
+        )
+        queue.offer(snapshotEvent)
+    }
+
+    private fun updateRecordedDocumentState(descriptor: DocumentDescriptor, currentText: String) {
+        recordingSessionState.rememberDocumentState(descriptor.id, currentText)
     }
 
     private sealed interface QueueItem

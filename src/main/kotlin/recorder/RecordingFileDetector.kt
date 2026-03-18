@@ -63,13 +63,23 @@ class RecordingFileDetector : FileEditorManagerListener {
     }
 
     override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
-        checkForExistingRecording(source.project, file)
+        val manager = service<EditorRecordingManager>()
+        if (manager.isRecording()) {
+            manager.recordSnapshotIfFileChanged(file)
+        } else {
+            checkForExistingRecording(source.project, file)
+        }
     }
 
     override fun selectionChanged(event: FileEditorManagerEvent) {
         event.newFile?.let {
-            val project = event.manager.project
-            checkForExistingRecording(project, it)
+            val manager = service<EditorRecordingManager>()
+            if (manager.isRecording()) {
+                manager.recordSnapshotIfFileChanged(it)
+            } else {
+                val project = event.manager.project
+                checkForExistingRecording(project, it)
+            }
         }
     }
 
@@ -150,7 +160,5 @@ class RecordingFileDetector : FileEditorManagerListener {
         }
     }
 }
-
-
 
 
