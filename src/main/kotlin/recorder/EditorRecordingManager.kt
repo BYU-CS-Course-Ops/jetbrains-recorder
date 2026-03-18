@@ -39,7 +39,7 @@ class EditorRecordingManager :
     private var eventQueue: BlockingQueue<QueueItem>? = null
     private var workerThread: Thread? = null
     private var workspaceRoots: List<Path> = emptyList()
-    private val recordedInitialStateKeys: MutableSet<String> = mutableSetOf()
+    private val recordedDocumentStates: MutableMap<String, String> = mutableMapOf()
     private var desiredRecordingState: Boolean = false
     private val activeRecordingPaths: MutableSet<Path> = mutableSetOf()
 
@@ -94,7 +94,7 @@ class EditorRecordingManager :
 
         val writer = RecordingEventWriter()
         workerThread = startWorker(queue, writer)
-        recordedInitialStateKeys.clear()
+        recordedDocumentStates.clear()
         activeRecordingPaths.clear()
 
         val documentListener = object : DocumentListener {
@@ -115,6 +115,7 @@ class EditorRecordingManager :
                             newFragment = event.newFragment.toString()
                         )
                         eventQueue?.offer(queuedEvent)
+                        updateRecordedDocumentState(descriptor, event.document.charsSequence.toString())
                         notifyDocumentRecorded()
                     }
                 } catch (t: Throwable) {
@@ -147,7 +148,7 @@ class EditorRecordingManager :
         workerThread = null
         eventQueue = null
         workspaceRoots = emptyList()
-        recordedInitialStateKeys.clear()
+        recordedDocumentStates.clear()
         activeRecordingPaths.clear()
         notifyRecordingStateChanged(false)
         RecordingFileDetector.onRecordingStopped()
@@ -400,20 +401,29 @@ class EditorRecordingManager :
         logger.info("Refreshed workspace roots: $oldSize -> ${newRoots.size}")
     }
 
+    fun recordSnapshotIfFileChanged(file: VirtualFile) {
+        val queue = eventQueue ?: return
+        if (!shouldRecord(file)) {
+            return
+        }
+        val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val descriptor = documentDescriptorFor(document, file)
+        val currentText = document.charsSequence.toString()
+        if (recordedDocumentStates[descriptor.id] == currentText) {
+            return
+        }
+        queueSnapshot(queue, descriptor, currentText)
+        recordedDocumentStates[descriptor.id] = currentText
+    }
+
     private fun recordInitialStateIfNeeded(event: DocumentEvent, descriptor: DocumentDescriptor) {
         val queue = eventQueue ?: return
-        if (!recordedInitialStateKeys.add(descriptor.id)) {
+        if (recordedDocumentStates.containsKey(descriptor.id)) {
             return
         }
         val initialText = computeDocumentTextBeforeChange(event)
-        val snapshotEvent = QueuedDocumentChange(
-            timestamp = Instant.now(),
-            descriptor = descriptor,
-            offset = 0,
-            oldFragment = initialText,
-            newFragment = initialText
-        )
-        queue.offer(snapshotEvent)
+        queueSnapshot(queue, descriptor, initialText)
+        recordedDocumentStates[descriptor.id] = initialText
     }
 
     private fun computeDocumentTextBeforeChange(event: DocumentEvent): String {
@@ -426,6 +436,21 @@ class EditorRecordingManager :
         val replaceEnd = (replaceStart + event.newFragment.length).coerceAtMost(builder.length)
         builder.replace(replaceStart, replaceEnd, event.oldFragment.toString())
         return builder.toString()
+    }
+
+    private fun queueSnapshot(queue: BlockingQueue<QueueItem>, descriptor: DocumentDescriptor, text: String) {
+        val snapshotEvent = QueuedDocumentChange(
+            timestamp = Instant.now(),
+            descriptor = descriptor,
+            offset = 0,
+            oldFragment = text,
+            newFragment = text
+        )
+        queue.offer(snapshotEvent)
+    }
+
+    private fun updateRecordedDocumentState(descriptor: DocumentDescriptor, currentText: String) {
+        recordedDocumentStates[descriptor.id] = currentText
     }
 
     private sealed interface QueueItem

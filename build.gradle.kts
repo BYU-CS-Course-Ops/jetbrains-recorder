@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-02-11.1"
+version = "2026-03-17.1"
 
 repositories {
     mavenCentral()
@@ -31,9 +31,9 @@ intellijPlatform {
         name = "BYU CS Code Recorder"
 
         description = """
-            Automatically records code changes in your projects. The plugin captures every edit, 
-            deletion, and modification to files without recording your screen. Recording starts 
-            automatically on IDE startup and provides visual feedback with a bright green 
+            Automatically records code changes in your projects. The plugin captures every edit,
+            deletion, and modification to files without recording your screen. Recording starts
+            automatically on IDE startup and provides visual feedback with a bright green
             indicator when edits are recorded.
         """.trimIndent()
 
