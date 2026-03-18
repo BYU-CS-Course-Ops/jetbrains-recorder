@@ -40,7 +40,7 @@ class EditorRecordingManager :
     private var eventQueue: BlockingQueue<QueueItem>? = null
     private var workerThread: Thread? = null
     private var workspaceRoots: List<Path> = emptyList()
-    private val recordedDocumentStates: MutableMap<String, String> = mutableMapOf()
+    private val recordingSessionState = RecordingSessionState()
     private var desiredRecordingState: Boolean = false
     private val activeRecordingPaths: MutableSet<Path> = mutableSetOf()
 
@@ -66,17 +66,19 @@ class EditorRecordingManager :
 
     private fun scheduleRecordingResume() {
         ApplicationManager.getApplication().invokeLater {
-            if (!desiredRecordingState || isRecording()) {
+            val shouldAttemptAutoStart = recordingSessionState.shouldAttemptAutoStart(
+                    desiredRecordingState = desiredRecordingState,
+                    isRecording = isRecording(),
+                    openProjectCount = ProjectManager.getInstance().openProjects.size
+                )
+            if (!shouldAttemptAutoStart) {
+                if (desiredRecordingState && !isRecording() && ProjectManager.getInstance().openProjects.isEmpty()) {
+                    logger.info("Deferring auto-start until a project is fully opened")
+                }
                 return@invokeLater
             }
-            if (ProjectManager.getInstance().openProjects.isEmpty()) {
-                logger.info("Deferring auto-start until a project is fully opened")
-                return@invokeLater
-            }
-            if (desiredRecordingState && !isRecording()) {
-                logger.info("Attempting to auto-start recording after IDE/plugin initialization")
-                startRecording()
-            }
+            logger.info("Attempting to auto-start recording after IDE/plugin initialization")
+            startRecording()
         }
     }
 
@@ -102,7 +104,7 @@ class EditorRecordingManager :
 
         val writer = RecordingEventWriter()
         workerThread = startWorker(queue, writer)
-        recordedDocumentStates.clear()
+        recordingSessionState.clear()
         activeRecordingPaths.clear()
 
         val documentListener = object : DocumentListener {
@@ -157,7 +159,7 @@ class EditorRecordingManager :
         workerThread = null
         eventQueue = null
         workspaceRoots = emptyList()
-        recordedDocumentStates.clear()
+        recordingSessionState.clear()
         activeRecordingPaths.clear()
         notifyRecordingStateChanged(false)
         RecordingFileDetector.onRecordingStopped()
@@ -432,21 +434,21 @@ class EditorRecordingManager :
         val document = FileDocumentManager.getInstance().getDocument(file) ?: return
         val descriptor = documentDescriptorFor(document, file)
         val currentText = document.charsSequence.toString()
-        if (recordedDocumentStates[descriptor.id] == currentText) {
+        if (!recordingSessionState.shouldQueueSnapshot(descriptor.id, currentText)) {
             return
         }
         queueSnapshot(queue, descriptor, currentText)
-        recordedDocumentStates[descriptor.id] = currentText
+        recordingSessionState.rememberDocumentState(descriptor.id, currentText)
     }
 
     private fun recordInitialStateIfNeeded(event: DocumentEvent, descriptor: DocumentDescriptor) {
         val queue = eventQueue ?: return
-        if (recordedDocumentStates.containsKey(descriptor.id)) {
+        if (recordingSessionState.hasDocumentState(descriptor.id)) {
             return
         }
         val initialText = computeDocumentTextBeforeChange(event)
         queueSnapshot(queue, descriptor, initialText)
-        recordedDocumentStates[descriptor.id] = initialText
+        recordingSessionState.rememberDocumentState(descriptor.id, initialText)
     }
 
     private fun computeDocumentTextBeforeChange(event: DocumentEvent): String {
@@ -473,7 +475,7 @@ class EditorRecordingManager :
     }
 
     private fun updateRecordedDocumentState(descriptor: DocumentDescriptor, currentText: String) {
-        recordedDocumentStates[descriptor.id] = currentText
+        recordingSessionState.rememberDocumentState(descriptor.id, currentText)
     }
 
     private sealed interface QueueItem
