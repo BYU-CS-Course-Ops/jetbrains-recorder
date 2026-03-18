@@ -12,6 +12,7 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.messages.Topic
@@ -65,6 +66,13 @@ class EditorRecordingManager :
 
     private fun scheduleRecordingResume() {
         ApplicationManager.getApplication().invokeLater {
+            if (!desiredRecordingState || isRecording()) {
+                return@invokeLater
+            }
+            if (ProjectManager.getInstance().openProjects.isEmpty()) {
+                logger.info("Deferring auto-start until a project is fully opened")
+                return@invokeLater
+            }
             if (desiredRecordingState && !isRecording()) {
                 logger.info("Attempting to auto-start recording after IDE/plugin initialization")
                 startRecording()
@@ -126,6 +134,7 @@ class EditorRecordingManager :
 
         eventMulticaster.addDocumentListener(documentListener, this)
         listener = documentListener
+        recordSnapshotsForOpenFiles()
         notifyRecordingStateChanged(true)
         logger.info("Editor recording started")
     }
@@ -399,6 +408,20 @@ class EditorRecordingManager :
         val newRoots = collectWorkspaceRoots()
         workspaceRoots = newRoots
         logger.info("Refreshed workspace roots: $oldSize -> ${newRoots.size}")
+    }
+
+    fun shouldResumeRecording(): Boolean = desiredRecordingState
+
+    fun recordSnapshotsForOpenFiles() {
+        if (!isRecording()) {
+            return
+        }
+        for (project in ProjectManager.getInstance().openProjects) {
+            val fileEditorManager = FileEditorManager.getInstance(project)
+            for (file in fileEditorManager.openFiles) {
+                recordSnapshotIfFileChanged(file)
+            }
+        }
     }
 
     fun recordSnapshotIfFileChanged(file: VirtualFile) {
