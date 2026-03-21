@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    outputs:
+      should_notify: ${{ steps.decide.outputs.should_notify }}
+      version_changed: ${{ steps.version.outputs.version_changed }}
+      old_version: ${{ steps.version.outputs.old_version }}
+      new_version: ${{ steps.version.outputs.new_version }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Detect version change
+        id: version
+        shell: bash
+        run: |
+          old_version=""
+          new_version="$(
+            sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' build.gradle.kts | head -n 1
+          )"
+          version_changed=false
+
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            before_sha="${{ github.event.before }}"
+
+            if [ "$before_sha" != "0000000000000000000000000000000000000000" ]; then
+              old_version="$(
+                git show "${before_sha}:build.gradle.kts" 2>/dev/null |
+                  sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -n 1
+              )"
+            fi
+
+            if [ -n "$new_version" ] && [ "$old_version" != "$new_version" ]; then
+              version_changed=true
+            fi
+          fi
+
+          echo "old_version=$old_version" >> "$GITHUB_OUTPUT"
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "version_changed=$version_changed" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to notify
+        id: decide
+        shell: bash
+        run: |
+          if [ "${{ steps.version.outputs.version_changed }}" = "true" ]; then
+            echo "should_notify=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_notify=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests
+        run: ./gradlew test
+
+  build:
+    name: Build
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out merged commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Build plugin archive
+        run: ./gradlew buildPlugin verifyPlugin
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: jetbrains-recorder-plugin-zip
+          path: build/distributions/*.zip
+
+  notify:
+    name: Post Discord build note
+    needs: [test, build]
+    if: needs.test.outputs.should_notify == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out merged commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: jetbrains-recorder-plugin-zip
+          path: build/distributions
+
+      - name: Locate plugin artifact
+        id: artifact
+        shell: bash
+        run: |
+          zip_path="$(find build/distributions -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+          test -n "$zip_path"
+          echo "zip_path=$zip_path" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$(basename "$zip_path")" >> "$GITHUB_OUTPUT"
+
+      - name: Build Discord payload
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          REPO: ${{ github.repository }}
+          OLD_VERSION: ${{ needs.test.outputs.old_version }}
+          NEW_VERSION: ${{ needs.test.outputs.new_version }}
+          ZIP_NAME: ${{ steps.artifact.outputs.zip_name }}
+        run: |
+          python3 <<'PY' > discord-payload.json
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          build_gradle = Path("build.gradle.kts").read_text(encoding="utf-8")
+          match = re.search(r'^\s*name\s*=\s*"([^"]+)"', build_gradle, re.MULTILINE)
+          plugin_name = match.group(1) if match else Path.cwd().name
+          old_version = os.environ.get("OLD_VERSION") or "unknown"
+          new_version = os.environ.get("NEW_VERSION") or old_version
+          short_sha = os.environ["COMMIT_SHA"][:7]
+          content = (
+              f"{plugin_name} {new_version} was pushed to `main` and built successfully.\n"
+              f"{os.environ['COMMIT_URL']}\n\n"
+              f"Version: `{old_version or 'none'}` -> `{new_version}`\n"
+              f"Artifact: `{os.environ['ZIP_NAME']}`\n\n"
+              f"Commit: `{short_sha}` in `{os.environ['REPO']}`"
+          )
+          print(json.dumps({"content": content}))
+          PY
+
+      - name: Post to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          test -n "$DISCORD_WEBHOOK_URL"
+          curl -sS -X POST \
+            -F "payload_json=$(cat discord-payload.json)" \
+            -F "files[0]=@${{ steps.artifact.outputs.zip_path }};type=application/zip" \
+            "$DISCORD_WEBHOOK_URL"
