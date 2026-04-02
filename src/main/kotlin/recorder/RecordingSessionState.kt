@@ -18,6 +18,8 @@ internal class RecordingSessionState {
 
     fun hasDocumentState(documentId: String): Boolean = recordedDocumentStates.containsKey(documentId)
 
+    fun documentState(documentId: String): String? = recordedDocumentStates[documentId]
+
     fun rememberDocumentState(documentId: String, currentText: String) {
         recordedDocumentStates[documentId] = currentText
     }

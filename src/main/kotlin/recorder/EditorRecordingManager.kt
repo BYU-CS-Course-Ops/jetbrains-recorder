@@ -117,15 +117,16 @@ class EditorRecordingManager :
                         }
                         val descriptor = documentDescriptorFor(event.document, virtualFile)
                         recordInitialStateIfNeeded(event, descriptor)
-                        val queuedEvent = QueuedDocumentChange(
-                            timestamp = Instant.now(),
+                        val currentText = event.document.charsSequence.toString()
+                        val queuedEvent = buildQueuedChange(
                             descriptor = descriptor,
+                            currentText = currentText,
                             offset = event.offset,
                             oldFragment = event.oldFragment.toString(),
                             newFragment = event.newFragment.toString()
                         )
                         eventQueue?.offer(queuedEvent)
-                        updateRecordedDocumentState(descriptor, event.document.charsSequence.toString())
+                        updateRecordedDocumentState(descriptor, currentText)
                         notifyDocumentRecorded()
                     }
                 } catch (t: Throwable) {
@@ -328,10 +329,42 @@ class EditorRecordingManager :
         logger.info(formatChangeAsJson(change))
     }
 
+    private fun buildQueuedChange(
+        descriptor: DocumentDescriptor,
+        currentText: String,
+        offset: Int,
+        oldFragment: String,
+        newFragment: String
+    ): QueuedDocumentChange {
+        val previousText = recordingSessionState.documentState(descriptor.id)
+        val replayedText = previousText?.let {
+            RecorderChangeValidator.applyChange(it, offset, oldFragment, newFragment)
+        }
+
+        if (previousText != null && replayedText == currentText) {
+            return QueuedDocumentChange(
+                timestamp = Instant.now(),
+                descriptor = descriptor,
+                offset = offset,
+                oldFragment = oldFragment,
+                newFragment = newFragment
+            )
+        }
+
+        return QueuedDocumentChange(
+            timestamp = Instant.now(),
+            descriptor = descriptor,
+            offset = 0,
+            oldFragment = currentText,
+            newFragment = currentText
+        )
+    }
+
     private fun formatChangeAsJson(change: QueuedDocumentChange): String = buildJsonObject(
         mapOf(
             "type" to "edit",
             "editor" to "jetbrains",
+            "recorderVersion" to RecorderMetadata.VERSION,
             "timestamp" to change.timestamp.toString(),
             "document" to change.descriptor.displayName,
             "offset" to change.offset,
@@ -351,6 +384,7 @@ class EditorRecordingManager :
             mapOf(
                 "type" to statusType,
                 "editor" to "jetbrains",
+                "recorderVersion" to RecorderMetadata.VERSION,
                 "timestamp" to timestamp.toString()
             ) + fields
         )

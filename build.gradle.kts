@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-03-17.1"
+version = "2026-04-02.1"
 
 repositories {
     mavenCentral()
@@ -45,6 +45,7 @@ intellijPlatform {
 
         changeNotes = """
             <ul>
+              <li>Added recorder version metadata and snapshot fallback for inconsistent edits</li>
               <li>Always auto-start recording on IDE startup and after plugin updates</li>
               <li>Added visual feedback: indicator flashes bright green when edits are recorded</li>
               <li>Improved workspace root initialization for reliable recording after restarts</li>
