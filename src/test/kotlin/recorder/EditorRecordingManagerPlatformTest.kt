@@ -65,6 +65,7 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         assertTrue(lines.isNotEmpty())
         assertTrue(lines.any { it.contains("\"oldFragment\":\"PLEASE_UPDATE_CLASS_CODE\\n\"") && it.contains("\"newFragment\":\"PLEASE_UPDATE_CLASS_CODE\\n\"") })
         assertTrue(lines.any { it.contains("\"oldFragment\":\"PLEASE\"") && it.contains("\"newFragment\":\"class \"") })
+        assertTrue(lines.all { it.contains("\"recorderVersion\":\"${RecorderMetadata.VERSION}\"") })
     }
 
     fun testStatusEventsAreWrittenToAllActiveRecordingFiles() {
