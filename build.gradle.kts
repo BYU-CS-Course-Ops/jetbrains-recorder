@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-04-02.1"
+version = "2026-04-02.2"
 
 repositories {
     mavenCentral()
@@ -56,6 +56,14 @@ intellijPlatform {
         ides {
             create("IC", "2025.1")
         }
+    }
+    publishPlugin {
+        token.set(providers.environmentVariable("JETBRAINS_MARKETPLACE_TOKEN"))
+    }
+    signPlugin {
+        certificateChain.set(providers.environmentVariable("JETBRAINS_CERTIFICATE_CHAIN"))
+        privateKey.set(providers.environmentVariable("JETBRAINS_PRIVATE_KEY"))
+        password.set(providers.environmentVariable("JETBRAINS_PRIVATE_KEY_PASSWORD"))
     }
 }
 
