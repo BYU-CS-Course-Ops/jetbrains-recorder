@@ -115,7 +115,7 @@ jobs:
           cache: gradle
 
       - name: Publish plugin
-        run: ./gradlew verifyPlugin publishPlugin
+        run: ./gradlew publishPlugin
 
   notify:
     name: Post Discord publish note

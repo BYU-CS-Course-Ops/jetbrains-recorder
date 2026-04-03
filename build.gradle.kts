@@ -57,13 +57,13 @@ intellijPlatform {
             create("IC", "2025.1")
         }
     }
-    publishPlugin {
-        token.set(providers.environmentVariable("JETBRAINS_MARKETPLACE_TOKEN"))
+    publishing {
+        token = providers.environmentVariable("JETBRAINS_MARKETPLACE_TOKEN")
     }
-    signPlugin {
-        certificateChain.set(providers.environmentVariable("JETBRAINS_CERTIFICATE_CHAIN"))
-        privateKey.set(providers.environmentVariable("JETBRAINS_PRIVATE_KEY"))
-        password.set(providers.environmentVariable("JETBRAINS_PRIVATE_KEY_PASSWORD"))
+    signing {
+        certificateChain = providers.environmentVariable("JETBRAINS_CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("JETBRAINS_PRIVATE_KEY")
+        password = providers.environmentVariable("JETBRAINS_PRIVATE_KEY_PASSWORD")
     }
 }
 
