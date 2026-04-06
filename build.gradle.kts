@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-04-02.3"
+version = "2026-04-06.1"
 
 kotlin {
     jvmToolchain(21)
@@ -66,4 +66,3 @@ intellijPlatform {
         password = providers.environmentVariable("JETBRAINS_PRIVATE_KEY_PASSWORD")
     }
 }
-
