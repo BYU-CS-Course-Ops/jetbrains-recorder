@@ -10,7 +10,7 @@ class StartRecordingAction : AnAction() {
     private val logger = Logger.getInstance(StartRecordingAction::class.java)
 
     override fun actionPerformed(e: AnActionEvent) {
-        logger.info("Start recording action triggered")
+        logger.info("Start recording action triggered: project=${e.project?.name}, place=${e.place}")
         service<EditorRecordingManager>().startRecording()
     }
 }

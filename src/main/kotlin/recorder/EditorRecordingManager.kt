@@ -59,6 +59,7 @@ class EditorRecordingManager :
 
     override fun loadState(state: State) {
         desiredRecordingState = state.wasRecording
+        logger.info("Loaded recorder state: desiredRecordingState=$desiredRecordingState")
         if (desiredRecordingState) {
             scheduleRecordingResume()
         }
@@ -66,11 +67,16 @@ class EditorRecordingManager :
 
     private fun scheduleRecordingResume() {
         ApplicationManager.getApplication().invokeLater {
+            val openProjectCount = ProjectManager.getInstance().openProjects.size
             val shouldAttemptAutoStart = recordingSessionState.shouldAttemptAutoStart(
                     desiredRecordingState = desiredRecordingState,
                     isRecording = isRecording(),
-                    openProjectCount = ProjectManager.getInstance().openProjects.size
+                    openProjectCount = openProjectCount
                 )
+            logger.info(
+                "Evaluated recorder auto-start: desiredRecordingState=$desiredRecordingState, " +
+                    "isRecording=${isRecording()}, openProjectCount=$openProjectCount, shouldAttempt=$shouldAttemptAutoStart"
+            )
             if (!shouldAttemptAutoStart) {
                 if (desiredRecordingState && !isRecording() && ProjectManager.getInstance().openProjects.isEmpty()) {
                     logger.info("Deferring auto-start until a project is fully opened")
@@ -86,6 +92,10 @@ class EditorRecordingManager :
      * Manages registration of document listeners used to log editor input while a recording session is active.
      */
     fun startRecording() {
+        logger.info(
+            "Start recording requested: isRecording=${isRecording()}, " +
+                "openProjectCount=${ProjectManager.getInstance().openProjects.size}, os=${System.getProperty("os.name")}"
+        )
         if (listener != null) {
             logger.warn("Recording already active; ignoring start request")
             return
@@ -99,7 +109,7 @@ class EditorRecordingManager :
         if (workspaceRoots.isEmpty()) {
             logger.warn("No workspace roots found; recording listener will be active but may not record until projects are opened")
         } else {
-            logger.info("Recording will monitor ${workspaceRoots.size} workspace root(s)")
+            logger.info("Recording will monitor ${workspaceRoots.size} workspace root(s): ${workspaceRoots.joinToString()}")
         }
 
         val writer = RecordingEventWriter()
@@ -125,7 +135,12 @@ class EditorRecordingManager :
                             oldFragment = event.oldFragment.toString(),
                             newFragment = event.newFragment.toString()
                         )
-                        eventQueue?.offer(queuedEvent)
+                        val offered = eventQueue?.offer(queuedEvent) == true
+                        logger.debug(
+                            "Queued document change: document=${descriptor.displayName}, " +
+                                "outputPath=${descriptor.outputPath}, offset=${event.offset}, " +
+                                "oldLength=${event.oldFragment.length}, newLength=${event.newFragment.length}, offered=$offered"
+                        )
                         updateRecordedDocumentState(descriptor, currentText)
                         notifyDocumentRecorded()
                     }
@@ -229,8 +244,16 @@ class EditorRecordingManager :
     /**
      * Writes JSON lines to a GZIP file, handling the common output stream setup.
      */
-    private fun writeToGzipFile(path: Path, lines: List<String>): Boolean =
-        try {
+    private fun writeToGzipFile(path: Path, lines: List<String>): Boolean {
+        logger.debug("Attempting to write ${lines.size} recording line(s) to $path")
+        return try {
+            val parent = path.parent
+            if (parent != null) {
+                logger.debug(
+                    "Recording output parent status for $path: " +
+                        "exists=${Files.exists(parent)}, isDirectory=${Files.isDirectory(parent)}, isWritable=${Files.isWritable(parent)}"
+                )
+            }
             GZIPOutputStream(
                 Files.newOutputStream(
                     path,
@@ -245,11 +268,16 @@ class EditorRecordingManager :
                 }
                 writer.flush()
             }
+            logger.info("Wrote ${lines.size} recording line(s) to $path")
             true
         } catch (ioe: IOException) {
             logger.warn("Failed to write to $path", ioe)
             false
+        } catch (se: SecurityException) {
+            logger.warn("Permission denied while writing to $path", se)
+            false
         }
+    }
 
     private fun startWorker(
         queue: BlockingQueue<QueueItem>,
@@ -266,6 +294,10 @@ class EditorRecordingManager :
                                 flushBatch(batch, writer)
                             }
                             batch.add(item)
+                            logger.debug(
+                                "Recording worker accepted document event: document=${item.descriptor.displayName}, " +
+                                    "outputPath=${item.descriptor.outputPath}, pendingBatchSize=${batch.size}"
+                            )
                             // Track this path for status event broadcasting
                             item.descriptor.outputPath?.let { activeRecordingPaths.add(it) }
                         }
@@ -274,10 +306,15 @@ class EditorRecordingManager :
                             // Flush any pending batch first
                             flushBatch(batch, writer)
                             // Write status event to all active recording files
+                            logger.debug(
+                                "Recording worker accepted status event: type=${item.statusType}, " +
+                                    "activeRecordingPathCount=${activeRecordingPaths.size}"
+                            )
                             writer.writeStatusEvent(item, activeRecordingPaths)
                         }
 
                         StopSignal -> {
+                            logger.info("Recording worker received stop signal")
                             flushBatch(batch, writer)
                             break
                         }
@@ -288,6 +325,7 @@ class EditorRecordingManager :
                     }
                 }
             } catch (_: InterruptedException) {
+                logger.warn("Recording worker interrupted")
                 Thread.currentThread().interrupt()
             } catch (t: Throwable) {
                 logger.error(
@@ -297,6 +335,7 @@ class EditorRecordingManager :
             } finally {
                 flushBatch(batch, writer)
                 writer.close()
+                logger.info("Recording worker stopped")
             }
         }, "EditorRecordingManager-Worker").apply {
             isDaemon = true
@@ -312,6 +351,10 @@ class EditorRecordingManager :
             return
         }
         val descriptor = batch.first().descriptor
+        logger.debug(
+            "Flushing recording batch: document=${descriptor.displayName}, " +
+                "outputPath=${descriptor.outputPath}, eventCount=${batch.size}"
+        )
         writer.writeBatch(descriptor, batch)
         batch.clear()
     }
@@ -351,6 +394,15 @@ class EditorRecordingManager :
             )
         }
 
+        if (previousText != null) {
+            logger.warn(
+                "Document change did not replay cleanly; queueing full snapshot instead. " +
+                    "document=${descriptor.displayName}, offset=$offset, oldLength=${oldFragment.length}, " +
+                    "newLength=${newFragment.length}, previousLength=${previousText.length}, currentLength=${currentText.length}"
+            )
+        } else {
+            logger.debug("No previous document state for ${descriptor.displayName}; queueing full snapshot")
+        }
         return QueuedDocumentChange(
             timestamp = Instant.now(),
             descriptor = descriptor,
@@ -392,27 +444,45 @@ class EditorRecordingManager :
     private fun collectWorkspaceRoots(): List<Path> {
         val openProjects = ProjectManager.getInstance().openProjects
         if (openProjects.isEmpty()) {
+            logger.info("No open projects found while collecting recorder workspace roots")
             return emptyList()
         }
         return openProjects.mapNotNull { project ->
-            project.basePath?.let { parsePathSafely(it, "Skipping project with invalid base path") }
+            val basePath = project.basePath
+            if (basePath == null) {
+                logger.warn("Skipping project without base path: ${project.name}")
+                null
+            } else {
+                parsePathSafely(basePath, "Skipping project with invalid base path: ${project.name}")
+            }
         }
     }
 
     private fun shouldRecord(virtualFile: VirtualFile?): Boolean {
-        if (virtualFile == null || !virtualFile.isInLocalFileSystem) {
+        if (virtualFile == null) {
+            logger.debug("Skipping document change because it is not associated with a virtual file")
+            return false
+        }
+        if (!virtualFile.isInLocalFileSystem) {
+            logger.debug("Skipping non-local file: ${formatVirtualFile(virtualFile)}")
             return false
         }
         // Exclude recording files themselves to prevent recursive recording
         if (virtualFile.name.contains(".recording.jsonl.gz")) {
+            logger.debug("Skipping recording output file to avoid recursion: ${formatVirtualFile(virtualFile)}")
             return false
         }
         // Don't record if we don't have workspace roots yet
         if (workspaceRoots.isEmpty()) {
+            logger.warn("Skipping ${formatVirtualFile(virtualFile)} because recorder has no workspace roots")
             return false
         }
-        val filePath = parsePathSafely(virtualFile.path) ?: return false
-        return workspaceRoots.any { filePath.startsWith(it) }
+        val filePath = parsePathSafely(virtualFile.path, "Skipping file with invalid path") ?: return false
+        val shouldRecord = workspaceRoots.any { filePath.startsWith(it) }
+        if (!shouldRecord) {
+            logger.debug("Skipping file outside workspace roots: file=$filePath, roots=${workspaceRoots.joinToString()}")
+        }
+        return shouldRecord
     }
 
     fun isRecording(): Boolean = listener != null
@@ -422,7 +492,12 @@ class EditorRecordingManager :
      * Used for events like focus changes that apply globally.
      */
     fun queueStatusEvent(statusType: String, vararg fields: Pair<String, Any>) {
-        val queue = eventQueue ?: return
+        val queue = eventQueue
+        if (queue == null) {
+            logger.debug("Dropping status event because recording queue is not active: type=$statusType")
+            return
+        }
+        logger.debug("Queueing status event: type=$statusType, fields=${fields.toMap()}")
         queue.offer(
             QueuedStatusEvent(
                 timestamp = Instant.now(),
@@ -443,17 +518,20 @@ class EditorRecordingManager :
         val oldSize = workspaceRoots.size
         val newRoots = collectWorkspaceRoots()
         workspaceRoots = newRoots
-        logger.info("Refreshed workspace roots: $oldSize -> ${newRoots.size}")
+        logger.info("Refreshed workspace roots: $oldSize -> ${newRoots.size}; roots=${newRoots.joinToString()}")
     }
 
     fun shouldResumeRecording(): Boolean = desiredRecordingState
 
     fun recordSnapshotsForOpenFiles() {
         if (!isRecording()) {
+            logger.debug("Skipping open-file snapshots because recording is not active")
             return
         }
+        logger.info("Recording snapshots for open files across ${ProjectManager.getInstance().openProjects.size} project(s)")
         for (project in ProjectManager.getInstance().openProjects) {
             val fileEditorManager = FileEditorManager.getInstance(project)
+            logger.info("Inspecting ${fileEditorManager.openFiles.size} open file(s) for project ${project.name}")
             for (file in fileEditorManager.openFiles) {
                 recordSnapshotIfFileChanged(file)
             }
@@ -461,16 +539,29 @@ class EditorRecordingManager :
     }
 
     fun recordSnapshotIfFileChanged(file: VirtualFile) {
-        val queue = eventQueue ?: return
+        val queue = eventQueue
+        if (queue == null) {
+            logger.debug("Skipping snapshot because recording queue is not active: ${formatVirtualFile(file)}")
+            return
+        }
         if (!shouldRecord(file)) {
             return
         }
-        val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val document = FileDocumentManager.getInstance().getDocument(file)
+        if (document == null) {
+            logger.warn("Unable to get document for open file: ${formatVirtualFile(file)}")
+            return
+        }
         val descriptor = documentDescriptorFor(document, file)
         val currentText = document.charsSequence.toString()
         if (!recordingSessionState.shouldQueueSnapshot(descriptor.id, currentText)) {
+            logger.debug("Skipping unchanged snapshot for ${descriptor.displayName}")
             return
         }
+        logger.info(
+            "Queueing snapshot for ${descriptor.displayName}: outputPath=${descriptor.outputPath}, " +
+                "textLength=${currentText.length}"
+        )
         queueSnapshot(queue, descriptor, currentText)
         recordingSessionState.rememberDocumentState(descriptor.id, currentText)
     }
@@ -481,6 +572,10 @@ class EditorRecordingManager :
             return
         }
         val initialText = computeDocumentTextBeforeChange(event)
+        logger.info(
+            "Queueing initial document state for ${descriptor.displayName}: outputPath=${descriptor.outputPath}, " +
+                "textLength=${initialText.length}"
+        )
         queueSnapshot(queue, descriptor, initialText)
         recordingSessionState.rememberDocumentState(descriptor.id, initialText)
     }
@@ -505,7 +600,8 @@ class EditorRecordingManager :
             oldFragment = text,
             newFragment = text
         )
-        queue.offer(snapshotEvent)
+        val offered = queue.offer(snapshotEvent)
+        logger.debug("Queued snapshot: document=${descriptor.displayName}, outputPath=${descriptor.outputPath}, offered=$offered")
     }
 
     private fun updateRecordedDocumentState(descriptor: DocumentDescriptor, currentText: String) {
@@ -540,10 +636,12 @@ class EditorRecordingManager :
         fun writeBatch(descriptor: DocumentDescriptor, batch: List<QueuedDocumentChange>) {
             val targetPath = descriptor.outputPath
             if (targetPath == null) {
+                logger.warn("Recording batch has no output path for ${descriptor.displayName}; writing ${batch.size} event(s) to IDE log only.")
                 batch.forEach { logQueuedEvent(it) }
                 return
             }
             val lines = batch.map { formatChangeAsJson(it) }
+            logger.info("Persisting recording batch: document=${descriptor.displayName}, path=$targetPath, eventCount=${batch.size}")
             if (!writeToGzipFile(targetPath, lines)) {
                 logger.warn("Failed to persist recording batch for ${descriptor.displayName}; falling back to IDE log.")
                 batch.forEach { logQueuedEvent(it) }
@@ -553,11 +651,14 @@ class EditorRecordingManager :
         fun writeStatusEvent(event: QueuedStatusEvent, paths: Set<Path>) {
             val jsonLine = formatStatusEventAsJson(event.timestamp, event.statusType, event.fields)
             if (paths.isEmpty()) {
+                logger.debug("No active recording files for status event ${event.statusType}; writing to IDE log only")
                 logger.info(jsonLine)
                 return
             }
             for (path in paths) {
-                writeToGzipFile(path, listOf(jsonLine))
+                if (!writeToGzipFile(path, listOf(jsonLine))) {
+                    logger.warn("Failed to persist status event ${event.statusType} to $path")
+                }
             }
         }
 
@@ -569,6 +670,9 @@ class EditorRecordingManager :
     private fun documentDescriptorFor(document: Document, virtualFile: VirtualFile?): DocumentDescriptor {
         val identifier = virtualFile?.path ?: "unsaved@${System.identityHashCode(document)}"
         val outputPath = virtualFile?.let { computeRecordingPath(it) }
+        logger.debug(
+            "Resolved document descriptor: id=$identifier, displayName=${describeDocument(virtualFile)}, outputPath=$outputPath"
+        )
         return DocumentDescriptor(
             id = identifier,
             displayName = describeDocument(virtualFile),
@@ -580,19 +684,23 @@ class EditorRecordingManager :
         try {
             val source = Paths.get(file.path)
             val baseName = file.nameWithoutExtension.ifEmpty { file.name }
-            source.resolveSibling("$baseName.recording.jsonl.gz")
+            val recordingPath = source.resolveSibling("$baseName.recording.jsonl.gz")
+            logger.debug("Computed recording path for ${formatVirtualFile(file)}: $recordingPath")
+            recordingPath
         } catch (ipe: InvalidPathException) {
             logger.warn("Unable to resolve recording path for ${file.path}; events will only be logged.", ipe)
             null
         }
 
     private fun notifyRecordingStateChanged(isRecording: Boolean) {
+        logger.debug("Publishing recording state change: isRecording=$isRecording")
         ApplicationManager.getApplication().messageBus
             .syncPublisher(RECORDING_STATE_TOPIC)
             .recordingStateChanged(isRecording)
     }
 
     private fun notifyDocumentRecorded() {
+        logger.debug("Publishing document recorded notification")
         ApplicationManager.getApplication().messageBus
             .syncPublisher(DOCUMENT_RECORDED_TOPIC)
             .documentChangeRecorded()

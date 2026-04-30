@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-04-06.1"
+version = "2026-04-30.1"
 
 kotlin {
     jvmToolchain(21)

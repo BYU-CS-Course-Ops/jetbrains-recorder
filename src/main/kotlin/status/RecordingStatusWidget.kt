@@ -2,6 +2,7 @@ package status
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.CustomStatusBarWidget
 import com.intellij.openapi.wm.StatusBar
@@ -45,6 +46,7 @@ private class RecordingStatusWidget(private val project: Project) :
     RecordingStateListener,
     DocumentRecordedListener {
 
+    private val logger = Logger.getInstance(RecordingStatusWidget::class.java)
     private val panel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.X_AXIS)
         border = JBUI.Borders.empty(0, 8, 0, 8)
@@ -128,6 +130,7 @@ private class RecordingStatusWidget(private val project: Project) :
     }
 
     private fun subscribeToRecordingUpdates() {
+        logger.debug("Subscribing recorder status widget to recording updates: project=${project.name}")
         connection = ApplicationManager.getApplication().messageBus.connect(this).also { bus ->
             bus.subscribe(EditorRecordingManager.RECORDING_STATE_TOPIC, this)
             bus.subscribe(EditorRecordingManager.DOCUMENT_RECORDED_TOPIC, this)
@@ -146,6 +149,7 @@ private class RecordingStatusWidget(private val project: Project) :
 
     private fun toggleRecording() {
         val manager = service<EditorRecordingManager>()
+        logger.info("Recorder status widget toggled: project=${project.name}, isRecording=${manager.isRecording()}")
         if (manager.isRecording()) {
             manager.stopRecording()
         } else {

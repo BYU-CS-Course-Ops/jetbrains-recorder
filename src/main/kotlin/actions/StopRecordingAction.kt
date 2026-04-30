@@ -10,7 +10,7 @@ class StopRecordingAction : AnAction() {
     private val logger = Logger.getInstance(StopRecordingAction::class.java)
 
     override fun actionPerformed(e: AnActionEvent) {
-        logger.info("Stop recording action triggered")
+        logger.info("Stop recording action triggered: project=${e.project?.name}, place=${e.place}")
         service<EditorRecordingManager>().stopRecording()
     }
 }

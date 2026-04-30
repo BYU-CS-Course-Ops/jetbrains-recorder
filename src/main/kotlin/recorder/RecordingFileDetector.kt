@@ -64,6 +64,10 @@ class RecordingFileDetector : FileEditorManagerListener {
 
     override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
         val manager = service<EditorRecordingManager>()
+        logger.debug(
+            "File opened while recorder detector active: project=${source.project.name}, " +
+                "file=${file.presentableUrl}, isRecording=${manager.isRecording()}"
+        )
         if (manager.isRecording()) {
             manager.recordSnapshotIfFileChanged(file)
         } else {
@@ -74,6 +78,10 @@ class RecordingFileDetector : FileEditorManagerListener {
     override fun selectionChanged(event: FileEditorManagerEvent) {
         event.newFile?.let {
             val manager = service<EditorRecordingManager>()
+            logger.debug(
+                "File selection changed while recorder detector active: project=${event.manager.project.name}, " +
+                    "file=${it.presentableUrl}, isRecording=${manager.isRecording()}"
+            )
             if (manager.isRecording()) {
                 manager.recordSnapshotIfFileChanged(it)
             } else {
@@ -87,35 +95,44 @@ class RecordingFileDetector : FileEditorManagerListener {
         // Skip if recording is already active
         val manager = service<EditorRecordingManager>()
         if (manager.isRecording()) {
+            logger.debug("Skipping recording-file detection because recording is active: ${file.presentableUrl}")
             return
         }
 
         // Skip non-local files
         if (!file.isInLocalFileSystem) {
+            logger.debug("Skipping recording-file detection for non-local file: ${file.presentableUrl}")
             return
         }
 
         // Skip recording files themselves
         if (file.name.contains(".recording.jsonl.gz")) {
+            logger.debug("Skipping recording-file detection for recording output file: ${file.presentableUrl}")
             return
         }
 
         // Don't prompt again if user dismissed this session
         if (userDismissedThisSession) {
+            logger.debug("Skipping recording-file detection because user dismissed resume prompts this session")
             return
         }
 
         // Check if we've already prompted for this specific file
         val fileKey = file.path
         if (promptedFiles.contains(fileKey)) {
+            logger.debug("Skipping recording-file detection because prompt was already shown for: ${file.presentableUrl}")
             return
         }
 
         // Check if a recording file exists for this file
         val recordingPath = computeRecordingPath(file)
+        logger.debug("Checking for existing recording file: source=${file.presentableUrl}, recordingPath=$recordingPath")
         if (recordingPath != null && Files.exists(recordingPath)) {
             promptedFiles.add(fileKey)
+            logger.info("Existing recording file detected for ${file.presentableUrl}: $recordingPath")
             showResumeRecordingPrompt(project, file)
+        } else {
+            logger.debug("No existing recording file found for ${file.presentableUrl}")
         }
     }
 
@@ -123,7 +140,9 @@ class RecordingFileDetector : FileEditorManagerListener {
         return try {
             val source = Paths.get(file.path)
             val baseName = file.nameWithoutExtension.ifEmpty { file.name }
-            source.resolveSibling("$baseName.recording.jsonl.gz")
+            val recordingPath = source.resolveSibling("$baseName.recording.jsonl.gz")
+            logger.debug("Computed existing-recording detection path for ${file.presentableUrl}: $recordingPath")
+            recordingPath
         } catch (e: Exception) {
             logger.warn("Unable to resolve recording path for ${file.path}", e)
             null
@@ -131,6 +150,7 @@ class RecordingFileDetector : FileEditorManagerListener {
     }
 
     private fun showResumeRecordingPrompt(project: Project, file: VirtualFile) {
+        logger.info("Showing resume-recording prompt: project=${project.name}, file=${file.presentableUrl}")
         ApplicationManager.getApplication().invokeLater {
             NotificationGroupManager.getInstance()
                 .getNotificationGroup("CodeRecorder.Notifications")
@@ -147,6 +167,7 @@ class RecordingFileDetector : FileEditorManagerListener {
 
     private class ResumeRecordingAction : NotificationAction("Resume Recording") {
         override fun actionPerformed(e: AnActionEvent, notification: Notification) {
+            Logger.getInstance(RecordingFileDetector::class.java).info("User accepted resume-recording prompt")
             onUserAcceptedResume()
             service<EditorRecordingManager>().startRecording()
             notification.expire()
@@ -155,10 +176,10 @@ class RecordingFileDetector : FileEditorManagerListener {
 
     private class DismissNotificationAction : NotificationAction("Dismiss") {
         override fun actionPerformed(e: AnActionEvent, notification: Notification) {
+            Logger.getInstance(RecordingFileDetector::class.java).info("User dismissed resume-recording prompt")
             onUserDismissed()
             notification.expire()
         }
     }
 }
-
 
