@@ -29,6 +29,21 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPOutputStream
 
+val TRACKED_EXTENSIONS = setOf(
+    // Set of file extension that we want the recorder to track.
+    // This prevents the recorder from picking up files such as `.html` when
+    // using `BYU_PYTEST_UTILS` which renders an HTML test report
+
+    // python
+    ".py",
+
+    // c++
+    ".h", ".cpp",
+
+    // java
+    ".java"
+)
+
 @State(name = "EditorRecordingManagerState", storages = [Storage("editorRecorder.xml")])
 @Service(Service.Level.APP)
 class EditorRecordingManager :
@@ -465,6 +480,13 @@ class EditorRecordingManager :
         }
         if (!virtualFile.isInLocalFileSystem) {
             logger.debug("Skipping non-local file: ${formatVirtualFile(virtualFile)}")
+            return false
+        }
+
+        // Exclude all files that we do not want to track
+        val extension = virtualFile.extension?.let { ".$it" } ?: ""
+        if (extension !in TRACKED_EXTENSIONS) {
+            logger.debug("Skipping untracked file type: extension=$extension, file=${formatVirtualFile(virtualFile)}")
             return false
         }
         // Exclude recording files themselves to prevent recursive recording
