@@ -301,26 +301,37 @@ class EditorRecordingManager :
         logger.info("Starting recording worker thread")
         return Thread({
             val batch = mutableListOf<QueuedDocumentChange>()
+            val deferredSnapshots = mutableMapOf<String, MutableList<QueuedDocumentChange>>()
+            val editedDocuments = mutableSetOf<String>()
+            fun flushBatch() {
+                flushOrDeferBatch(batch, writer, deferredSnapshots, editedDocuments)
+            }
+
             try {
                 while (true) {
                     when (val item = queue.poll(BATCH_IDLE_MILLIS, TimeUnit.MILLISECONDS)) {
                         is QueuedDocumentChange -> {
                             if (batch.isNotEmpty() && batch.first().descriptor.id != item.descriptor.id) {
-                                flushBatch(batch, writer)
+                                flushBatch()
+                            }
+                            if (item.isRealEdit()) {
+                                val docId = item.descriptor.id
+                                if (editedDocuments.add(docId)) {
+                                    item.descriptor.outputPath?.let { activeRecordingPaths.add(it) }
+                                    deferredSnapshots.remove(docId)?.let { pending ->
+                                        writer.writeBatch(item.descriptor, pending)
+                                    }
+                                }
                             }
                             batch.add(item)
                             logger.debug(
                                 "Recording worker accepted document event: document=${item.descriptor.displayName}, " +
                                     "outputPath=${item.descriptor.outputPath}, pendingBatchSize=${batch.size}"
                             )
-                            // Track this path for status event broadcasting
-                            item.descriptor.outputPath?.let { activeRecordingPaths.add(it) }
                         }
 
                         is QueuedStatusEvent -> {
-                            // Flush any pending batch first
-                            flushBatch(batch, writer)
-                            // Write status event to all active recording files
+                            flushBatch()
                             logger.debug(
                                 "Recording worker accepted status event: type=${item.statusType}, " +
                                     "activeRecordingPathCount=${activeRecordingPaths.size}"
@@ -330,12 +341,17 @@ class EditorRecordingManager :
 
                         StopSignal -> {
                             logger.info("Recording worker received stop signal")
-                            flushBatch(batch, writer)
+                            flushBatch()
+                            if (deferredSnapshots.isNotEmpty()) {
+                                logger.info(
+                                    "Discarding ${deferredSnapshots.size} initial snapshot(s) with no edits"
+                                )
+                            }
                             break
                         }
 
                         null -> {
-                            flushBatch(batch, writer)
+                            flushBatch()
                         }
                     }
                 }
@@ -348,7 +364,7 @@ class EditorRecordingManager :
                     t
                 )
             } finally {
-                flushBatch(batch, writer)
+                flushBatch()
                 writer.close()
                 logger.info("Recording worker stopped")
             }
@@ -358,19 +374,30 @@ class EditorRecordingManager :
         }
     }
 
-    private fun flushBatch(
+    private fun flushOrDeferBatch(
         batch: MutableList<QueuedDocumentChange>,
-        writer: RecordingEventWriter
+        writer: RecordingEventWriter,
+        deferredSnapshots: MutableMap<String, MutableList<QueuedDocumentChange>>,
+        editedDocuments: MutableSet<String>
     ) {
         if (batch.isEmpty()) {
             return
         }
         val descriptor = batch.first().descriptor
-        logger.debug(
-            "Flushing recording batch: document=${descriptor.displayName}, " +
-                "outputPath=${descriptor.outputPath}, eventCount=${batch.size}"
-        )
-        writer.writeBatch(descriptor, batch)
+        val docId = descriptor.id
+
+        if (docId in editedDocuments) {
+            logger.debug(
+                "Flushing recording batch: document=${descriptor.displayName}, " +
+                    "outputPath=${descriptor.outputPath}, eventCount=${batch.size}"
+            )
+            writer.writeBatch(descriptor, batch)
+        } else {
+            logger.debug(
+                "Deferring initial snapshot batch for ${descriptor.displayName} until a real edit arrives"
+            )
+            deferredSnapshots.getOrPut(docId) { mutableListOf() }.addAll(batch)
+        }
         batch.clear()
     }
 
@@ -405,7 +432,8 @@ class EditorRecordingManager :
                 descriptor = descriptor,
                 offset = offset,
                 oldFragment = oldFragment,
-                newFragment = newFragment
+                newFragment = newFragment,
+                kind = ChangeKind.DELTA
             )
         }
 
@@ -423,7 +451,8 @@ class EditorRecordingManager :
             descriptor = descriptor,
             offset = 0,
             oldFragment = currentText,
-            newFragment = currentText
+            newFragment = currentText,
+            kind = ChangeKind.RECOVERY_SNAPSHOT
         )
     }
 
@@ -620,7 +649,8 @@ class EditorRecordingManager :
             descriptor = descriptor,
             offset = 0,
             oldFragment = text,
-            newFragment = text
+            newFragment = text,
+            kind = ChangeKind.INITIAL_SNAPSHOT
         )
         val offered = queue.offer(snapshotEvent)
         logger.debug("Queued snapshot: document=${descriptor.displayName}, outputPath=${descriptor.outputPath}, offered=$offered")
@@ -637,8 +667,17 @@ class EditorRecordingManager :
         val descriptor: DocumentDescriptor,
         val offset: Int,
         val oldFragment: String,
-        val newFragment: String
-    ) : QueueItem
+        val newFragment: String,
+        val kind: ChangeKind
+    ) : QueueItem {
+        fun isRealEdit(): Boolean = kind != ChangeKind.INITIAL_SNAPSHOT
+    }
+
+    private enum class ChangeKind {
+        INITIAL_SNAPSHOT,
+        DELTA,
+        RECOVERY_SNAPSHOT
+    }
 
     private data class QueuedStatusEvent(
         val timestamp: Instant,
