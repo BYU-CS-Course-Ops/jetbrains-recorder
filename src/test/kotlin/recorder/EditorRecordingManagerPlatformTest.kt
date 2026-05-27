@@ -33,7 +33,7 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         }
     }
 
-    fun testRecordingSeedsSnapshotForAlreadyOpenFile() {
+    fun testRecordingOpenFileWithoutEditsProducesNoRecording() {
         val file = createProjectFile("targets.py", "PLEASE_UPDATE_CLASS_CODE\n")
         assertTrue(file.isInLocalFileSystem)
         FileEditorManager.getInstance(project).openFile(file, true)
@@ -41,10 +41,11 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         manager.startRecording()
         manager.stopRecording()
 
-        val lines = readRecordingLines(recordingPathFor(Paths.get(file.path)))
-        assertSize(1, lines)
-        assertTrue(lines[0].contains("\"oldFragment\":\"PLEASE_UPDATE_CLASS_CODE\\n\""))
-        assertTrue(lines[0].contains("\"newFragment\":\"PLEASE_UPDATE_CLASS_CODE\\n\""))
+        val recordingPath = recordingPathFor(Paths.get(file.path))
+        assertFalse(
+            "Recording file should not exist for open file with no edits: $recordingPath",
+            Files.exists(recordingPath)
+        )
     }
 
     fun testEditingOpenFileRecordsSnapshotThenDelta() {
@@ -74,8 +75,18 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         val editorManager = FileEditorManager.getInstance(project)
         editorManager.openFile(firstFile, true)
         editorManager.openFile(secondFile, true)
+        val firstDocument = FileDocumentManager.getInstance().getDocument(firstFile)
+        val secondDocument = FileDocumentManager.getInstance().getDocument(secondFile)
+        assertNotNull(firstDocument)
+        assertNotNull(secondDocument)
 
         manager.startRecording()
+
+        WriteCommandAction.runWriteCommandAction(project) {
+            firstDocument!!.replaceString(0, 5, "hello")
+            secondDocument!!.replaceString(0, 5, "world")
+        }
+
         manager.queueStatusEvent("focusStatus", "focused" to false)
         manager.stopRecording()
 
@@ -86,7 +97,7 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         assertTrue(secondLines.any { it.contains("\"type\":\"focusStatus\"") && it.contains("\"focused\":false") })
     }
 
-    fun testRestartingRecordingAppendsAnotherSnapshotForSameFile() {
+    fun testRestartingRecordingWithoutEditsProducesNoRecording() {
         val file = createProjectFile("repeat.py", "print('again')\n")
         FileEditorManager.getInstance(project).openFile(file, true)
 
@@ -96,13 +107,14 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         manager.startRecording()
         manager.stopRecording()
 
-        val lines = readRecordingLines(recordingPathFor(Paths.get(file.path)))
-        assertSize(2, lines)
-        assertTrue(lines.all { it.contains("\"oldFragment\":\"print('again')\\n\"") })
-        assertTrue(lines.all { it.contains("\"newFragment\":\"print('again')\\n\"") })
+        val recordingPath = recordingPathFor(Paths.get(file.path))
+        assertFalse(
+            "Recording file should not exist for file with no edits across sessions: $recordingPath",
+            Files.exists(recordingPath)
+        )
     }
 
-    fun testOnlyEditedFileGetsDeltaWhenMultipleFilesAreOpen() {
+    fun testOnlyEditedFileGetsRecordingWhenMultipleFilesAreOpen() {
         val firstFile = createProjectFile("alpha.py", "alpha\n")
         val secondFile = createProjectFile("beta.py", "beta\n")
         val editorManager = FileEditorManager.getInstance(project)
@@ -120,13 +132,37 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         manager.stopRecording()
 
         val firstLines = readRecordingLines(recordingPathFor(Paths.get(firstFile.path)))
-        val secondLines = readRecordingLines(recordingPathFor(Paths.get(secondFile.path)))
+        val secondRecordingPath = recordingPathFor(Paths.get(secondFile.path))
 
         assertSize(2, firstLines)
-        assertSize(1, secondLines)
+        assertTrue(firstLines[0].contains("\"oldFragment\":\"alpha\\n\""))
+        assertTrue(firstLines[0].contains("\"newFragment\":\"alpha\\n\""))
         assertTrue(firstLines[1].contains("\"oldFragment\":\"alpha\""))
         assertTrue(firstLines[1].contains("\"newFragment\":\"ALPHA\""))
-        assertTrue(secondLines[0].contains("\"oldFragment\":\"beta\\n\""))
+        assertFalse(
+            "Unedited file should not produce a recording: $secondRecordingPath",
+            Files.exists(secondRecordingPath)
+        )
+    }
+
+    fun testRecoverySnapshotAfterRealEditIsRecorded() {
+        val file = createProjectFile("recovery.py", "alpha\n")
+        FileEditorManager.getInstance(project).openFile(file, true)
+        val document = FileDocumentManager.getInstance().getDocument(file)
+        assertNotNull(document)
+
+        manager.startRecording()
+        rememberDocumentState(file.path, "stale\n")
+
+        WriteCommandAction.runWriteCommandAction(project) {
+            document!!.replaceString(0, 5, "ALPHA")
+        }
+
+        manager.stopRecording()
+
+        val lines = readRecordingLines(recordingPathFor(Paths.get(file.path)))
+        assertTrue(lines.any { it.contains("\"oldFragment\":\"alpha\\n\"") })
+        assertTrue(lines.any { it.contains("\"newFragment\":\"ALPHA\\n\"") })
     }
 
     private fun recordingPathFor(sourcePath: Path): Path {
@@ -150,5 +186,12 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         GZIPInputStream(Files.newInputStream(recordingPath)).bufferedReader().use { reader ->
             return reader.readLines()
         }
+    }
+
+    private fun rememberDocumentState(documentId: String, text: String) {
+        val stateField = EditorRecordingManager::class.java.getDeclaredField("recordingSessionState")
+        stateField.isAccessible = true
+        val state = stateField.get(manager) as RecordingSessionState
+        state.rememberDocumentState(documentId, text)
     }
 }

@@ -30,6 +30,7 @@ class RecordingFileDetector : FileEditorManagerListener {
 
     companion object {
         private val promptedFiles: MutableSet<String> = mutableSetOf()
+        private var lastActiveFilePath: String? = null
         // Tracks if user has dismissed (not accepted) a prompt this session
         private var userDismissedThisSession: Boolean = false
         // Tracks if user accepted and we should allow prompting again when recording stops
@@ -40,6 +41,7 @@ class RecordingFileDetector : FileEditorManagerListener {
          * reset state to allow prompting again.
          */
         fun onRecordingStopped() {
+            lastActiveFilePath = null
             if (userAcceptedResume) {
                 userAcceptedResume = false
                 promptedFiles.clear()
@@ -69,6 +71,7 @@ class RecordingFileDetector : FileEditorManagerListener {
                 "file=${file.presentableUrl}, isRecording=${manager.isRecording()}"
         )
         if (manager.isRecording()) {
+            emitFileSwitchEvent(manager, null, file)
             manager.recordSnapshotIfFileChanged(file)
         } else {
             checkForExistingRecording(source.project, file)
@@ -76,19 +79,36 @@ class RecordingFileDetector : FileEditorManagerListener {
     }
 
     override fun selectionChanged(event: FileEditorManagerEvent) {
-        event.newFile?.let {
+        event.newFile?.let { newFile ->
             val manager = service<EditorRecordingManager>()
             logger.debug(
                 "File selection changed while recorder detector active: project=${event.manager.project.name}, " +
-                    "file=${it.presentableUrl}, isRecording=${manager.isRecording()}"
+                    "file=${newFile.presentableUrl}, isRecording=${manager.isRecording()}"
             )
             if (manager.isRecording()) {
-                manager.recordSnapshotIfFileChanged(it)
+                emitFileSwitchEvent(manager, event.oldFile, newFile)
+                manager.recordSnapshotIfFileChanged(newFile)
             } else {
                 val project = event.manager.project
-                checkForExistingRecording(project, it)
+                checkForExistingRecording(project, newFile)
             }
         }
+    }
+
+    private fun emitFileSwitchEvent(manager: EditorRecordingManager, oldFile: VirtualFile?, newFile: VirtualFile) {
+        val newPath = newFile.path
+        if (newPath == lastActiveFilePath) {
+            logger.debug("Skipping fileSwitch event — file has not changed: $newPath")
+            return
+        }
+        val leftPath = oldFile?.path ?: lastActiveFilePath
+        lastActiveFilePath = newPath
+        logger.info("Emitting fileSwitch event: left=$leftPath, arrived=$newPath")
+        manager.queueStatusEvent(
+            "fileSwitch",
+            "left" to (leftPath ?: ""),
+            "arrived" to newPath
+        )
     }
 
     private fun checkForExistingRecording(project: Project, file: VirtualFile) {
