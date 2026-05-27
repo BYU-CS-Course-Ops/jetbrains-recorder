@@ -66,9 +66,14 @@ jobs:
   build:
     name: Build
     needs: test
-    runs-on: ubuntu-latest-xlarge
+    runs-on: ubuntu-latest
 
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h
+
       - name: Check out merged commit
         uses: actions/checkout@v6
         with:
