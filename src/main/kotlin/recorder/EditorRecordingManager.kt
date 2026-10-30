@@ -58,6 +58,14 @@ class EditorRecordingManager :
     private val recordingSessionState = RecordingSessionState()
     private var desiredRecordingState: Boolean = false
     private val activeRecordingPaths: MutableSet<Path> = mutableSetOf()
+    private var originalInlineCompletionEnabled: Boolean? = null
+    private val inlineCompletionGuard = InlineCompletionGuard(
+        savedOriginal = { originalInlineCompletionEnabled },
+        saveOriginal = { originalInlineCompletionEnabled = it },
+        changed = { change ->
+            queueStatusEvent(change.type.eventType, "setting" to "inlineCompletion.enabled", "value" to change.value)
+        }
+    )
 
 
     companion object {
@@ -68,12 +76,16 @@ class EditorRecordingManager :
         private const val BATCH_IDLE_MILLIS = 1000L
     }
 
-    data class State(var wasRecording: Boolean = false)
+    data class State(
+        var wasRecording: Boolean = false,
+        var originalInlineCompletionEnabled: Boolean? = null
+    )
 
-    override fun getState(): State = State(desiredRecordingState)
+    override fun getState(): State = State(desiredRecordingState, originalInlineCompletionEnabled)
 
     override fun loadState(state: State) {
         desiredRecordingState = state.wasRecording
+        originalInlineCompletionEnabled = state.originalInlineCompletionEnabled
         logger.info("Loaded recorder state: desiredRecordingState=$desiredRecordingState")
         if (desiredRecordingState) {
             scheduleRecordingResume()
@@ -167,6 +179,7 @@ class EditorRecordingManager :
 
         eventMulticaster.addDocumentListener(documentListener, this)
         listener = documentListener
+        inlineCompletionGuard.start()
         recordSnapshotsForOpenFiles()
         notifyRecordingStateChanged(true)
         logger.info("Editor recording started")
@@ -182,6 +195,8 @@ class EditorRecordingManager :
             return
         }
 
+        // Restore before closing the queue so the restoration is included in the recording.
+        inlineCompletionGuard.stop()
         eventMulticaster.removeDocumentListener(toRemove)
         listener = null
         val queue = eventQueue
@@ -303,6 +318,7 @@ class EditorRecordingManager :
             val batch = mutableListOf<QueuedDocumentChange>()
             val deferredSnapshots = mutableMapOf<String, MutableList<QueuedDocumentChange>>()
             val editedDocuments = mutableSetOf<String>()
+            val settingHistory = mutableListOf<QueuedStatusEvent>()
             fun flushBatch() {
                 flushOrDeferBatch(batch, writer, deferredSnapshots, editedDocuments)
             }
@@ -321,6 +337,11 @@ class EditorRecordingManager :
                                     deferredSnapshots.remove(docId)?.let { pending ->
                                         writer.writeBatch(item.descriptor, pending)
                                     }
+                                    // A file may first be edited after a setting changes. Include
+                                    // session setting history without creating files for untouched documents.
+                                    item.descriptor.outputPath?.let { path ->
+                                        settingHistory.forEach { writer.writeStatusEvent(it, setOf(path)) }
+                                    }
                                 }
                             }
                             batch.add(item)
@@ -332,6 +353,9 @@ class EditorRecordingManager :
 
                         is QueuedStatusEvent -> {
                             flushBatch()
+                            if (SettingChangeType.entries.any { it.eventType == item.statusType }) {
+                                settingHistory.add(item)
+                            }
                             logger.debug(
                                 "Recording worker accepted status event: type=${item.statusType}, " +
                                     "activeRecordingPathCount=${activeRecordingPaths.size}"
