@@ -71,8 +71,8 @@ with those files.
 {
   "type": "recorderSettingChanged",
   "editor": "jetbrains",
-  "recorderVersion": "2026-04-30.1",
-  "timestamp": "2026-10-28T18:00:00Z",
+  "recorderVersion": "2026-11-04.1",
+  "timestamp": "2026-11-04T18:00:00Z",
   "setting": "inlineCompletion.enabled",
   "value": false
 }

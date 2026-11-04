@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "edu.byu.cs.courseops"
-version = "2026-04-30.1"
+version = "2026-11-04.1"
 
 kotlin {
     jvmToolchain(21)
@@ -45,10 +45,11 @@ intellijPlatform {
 
         changeNotes = """
             <ul>
-              <li>Added recorder version metadata and snapshot fallback for inconsistent edits</li>
-              <li>Always auto-start recording on IDE startup and after plugin updates</li>
-              <li>Added visual feedback: indicator flashes bright green when edits are recorded</li>
-              <li>Improved workspace root initialization for reliable recording after restarts</li>
+              <li>Temporarily disable JetBrains language-model inline completion while recording and restore the previous preference when recording stops</li>
+              <li>Detect and revert attempts to re-enable inline completion during recording</li>
+              <li>Distinguish automatic setting changes from observed external changes with recorderSettingChanged and userSettingChanged recording events</li>
+              <li>Show one warning per recording session with a Settings button when inline completion cannot be controlled or verified</li>
+              <li>Preserve the original preference across restarts and improve compatibility with modular PyCharm settings services</li>
             </ul>
         """.trimIndent()
     }
