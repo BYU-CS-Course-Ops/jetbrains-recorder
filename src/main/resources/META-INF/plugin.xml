@@ -11,6 +11,7 @@
     <vendor url="https://github.com/BYU-CS-Course-Ops/jetbrains-recorder">Code Recorder</vendor>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="recorder-full-line.xml">org.jetbrains.completion.full.line</depends>
 
     <actions>
         <!-- Main group that will be added to Tools menu -->
@@ -36,6 +37,7 @@
         <statusBarWidgetFactory id="record-editor-status-widget" implementation="status.RecordingStatusWidgetFactory"/>
         <postStartupActivity implementation="recorder.RecordingStartupActivity"/>
         <notificationGroup id="CodeRecorder.Notifications" displayType="BALLOON"/>
+        <notificationGroup id="CodeRecorder.Settings" displayType="STICKY_BALLOON"/>
     </extensions>
 
     <projectListeners>

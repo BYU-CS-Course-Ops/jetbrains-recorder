@@ -1,0 +1,2 @@
+<!-- The optional dependency makes Full Line visible without requiring it in other JetBrains IDEs. -->
+<idea-plugin/>

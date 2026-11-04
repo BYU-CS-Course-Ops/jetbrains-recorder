@@ -7,6 +7,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.util.xmlb.XmlSerializer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -163,6 +164,46 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
         val lines = readRecordingLines(recordingPathFor(Paths.get(file.path)))
         assertTrue(lines.any { it.contains("\"oldFragment\":\"alpha\\n\"") })
         assertTrue(lines.any { it.contains("\"newFragment\":\"ALPHA\\n\"") })
+    }
+
+    fun testSettingChangesReachFilesEditedBeforeAndAfterTheChange() {
+        val first = createProjectFile("before.py", "one\n")
+        val second = createProjectFile("after.py", "two\n")
+        val untouched = createProjectFile("untouched.py", "three\n")
+        val editors = FileEditorManager.getInstance(project)
+        listOf(first, second, untouched).forEach { editors.openFile(it, false) }
+        manager.startRecording()
+        WriteCommandAction.runWriteCommandAction(project) {
+            FileDocumentManager.getInstance().getDocument(first)!!.insertString(0, "# ")
+        }
+        manager.queueStatusEvent("userSettingChanged", "setting" to "inlineCompletion.enabled", "value" to true)
+        manager.queueStatusEvent("recorderSettingChanged", "setting" to "inlineCompletion.enabled", "value" to false)
+        WriteCommandAction.runWriteCommandAction(project) {
+            FileDocumentManager.getInstance().getDocument(second)!!.insertString(0, "# ")
+        }
+        manager.stopRecording()
+
+        for (file in listOf(first, second)) {
+            val changes = readRecordingLines(recordingPathFor(Paths.get(file.path)))
+                .filter { it.contains("\"type\":\"userSettingChanged\"") || it.contains("\"type\":\"recorderSettingChanged\"") }
+            assertSize(2, changes)
+            assertTrue(changes[0].contains("\"type\":\"userSettingChanged\""))
+            assertTrue(changes[1].contains("\"type\":\"recorderSettingChanged\""))
+            assertTrue(changes[0].contains("\"setting\":\"inlineCompletion.enabled\""))
+            assertTrue(changes[0].contains("\"value\":true"))
+            assertTrue(changes[1].contains("\"value\":false"))
+        }
+        assertFalse(Files.exists(recordingPathFor(Paths.get(untouched.path))))
+    }
+
+    fun testOriginalCompletionPreferenceIsIncludedInPersistentState() {
+        for (original in listOf(true, false, null)) {
+            val serialized = XmlSerializer.serialize(EditorRecordingManager.State(false, original))
+            manager.loadState(XmlSerializer.deserialize(serialized, EditorRecordingManager.State::class.java))
+            assertEquals(original, manager.state.originalInlineCompletionEnabled)
+        }
+        manager.loadState(EditorRecordingManager.State())
+        assertNull(manager.state.originalInlineCompletionEnabled)
     }
 
     private fun recordingPathFor(sourcePath: Path): Path {
