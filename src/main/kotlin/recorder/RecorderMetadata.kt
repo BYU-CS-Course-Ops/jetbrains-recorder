@@ -1,5 +1,5 @@
 package recorder
 
 internal object RecorderMetadata {
-    const val VERSION = "2026-11-04.1"
+    const val VERSION = "2026-11-23.2"
 }

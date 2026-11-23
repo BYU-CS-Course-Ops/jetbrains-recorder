@@ -29,6 +29,7 @@ class InlineCompletionGuardTest {
         var saved: Boolean? = null
         var warnings = 0
         var unavailable = false
+        var lookupFailure: Throwable? = null
         var closes = 0
         val checks = mutableListOf<() -> Unit>()
         val changes = mutableListOf<SettingChange>()
@@ -37,6 +38,7 @@ class InlineCompletionGuardTest {
             saveOriginal = { saved = it },
             changed = { changes.add(it) },
             settingsProvider = {
+                lookupFailure?.let { throw it }
                 check(!unavailable) { "Unsupported IDE settings API" }
                 InlineCompletionSettingsAccess(settings)
             },
@@ -49,20 +51,52 @@ class InlineCompletionGuardTest {
     }
 
     @Test
-    fun `repeated unsupported API checks warn only once until next recording starts`() {
+    fun `unavailable settings are silently skipped across repeated checks and recordings`() {
         val f = Fixture()
         f.unavailable = true
         f.guard.start()
         repeat(10) { f.checks.single().invoke() }
         f.guard.start() // Duplicate start must not reset the warning gate or add a monitor.
-        assertEquals(1, f.warnings)
+        assertEquals(0, f.warnings)
         assertEquals(1, f.checks.size)
         assertNull(f.saved)
+        assertTrue(f.changes.isEmpty())
+        f.guard.stop()
+        f.guard.start()
+        assertEquals(0, f.warnings)
+        f.guard.stop()
+        assertEquals(2, f.closes)
+    }
+
+    @Test
+    fun `missing settings classes and methods are silently skipped`() {
+        for (failure in listOf(
+            ClassNotFoundException("Settings class unavailable"),
+            NoSuchMethodException("Completion setting unavailable"),
+            NoClassDefFoundError("Settings dependency unavailable")
+        )) {
+            val f = Fixture()
+            f.lookupFailure = failure
+            f.guard.start()
+            f.checks.single().invoke()
+            f.guard.stop()
+            assertEquals(0, f.warnings)
+            assertNull(f.saved)
+            assertTrue(f.changes.isEmpty())
+        }
+    }
+
+    @Test
+    fun `failure reading an available setting still warns once per recording`() {
+        val f = Fixture()
+        f.settings.beforeRead = { error("Setting read failed") }
+        f.guard.start()
+        repeat(10) { f.checks.single().invoke() }
+        assertEquals(1, f.warnings)
         f.guard.stop()
         f.guard.start()
         assertEquals(2, f.warnings)
         f.guard.stop()
-        assertEquals(2, f.closes)
     }
 
     @Test
@@ -119,7 +153,7 @@ class InlineCompletionGuardTest {
         f.guard.stop()
         assertTrue(f.settings.enabled)
         assertNull(f.saved)
-        assertEquals(1, f.warnings)
+        assertEquals(0, f.warnings)
     }
 
     @Test

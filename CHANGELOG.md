@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-23.2
+
+- Respect saved disabled plugin state even when PyCharm still includes the plugin in its loaded plugin list, preventing repeated restart prompts for already disabled plugins on 2026.2.
+- Keep the existing modal and restart requirement for enabled plugins and for plugins the recorder has just disabled until that IDE process exits.
+- Continue turning off and monitoring available inline-completion settings independently of whether Full Line is already disabled, restoring the previous preference when recording stops.
+
+## 2026-11-23.1
+
+- Check Air (`com.intellij.air`) and Full Line Code Completion (`org.jetbrains.completion.full.line`) before every manual or automatic recording start; absent or disabled plugins do not block recording.
+- Show a modal listing enabled plugins with Cancel and Disable and Restart buttons. Cancel leaves recording stopped; Disable and Restart persists plugin changes and resumes recording after relaunch.
+- Keep recording stopped until restart even if disabling a plugin has already been scheduled, and handle duplicate startup requests while the modal is open.
+- Confirmed the existing `MLCompletionSettings.isCompletionEnabled()` / `setCompletionEnabled(boolean)` API and update flow in locally installed PyCharm 2026.3.0.1 (PY-263.7307.329).
+- Silently skip inline-completion settings lookup when the plugin, service, or setting API is unavailable; continue recording without displaying the settings warning.
+
 ## 2026-11-04.1
 
 - Serialize completion checks with shutdown, ignore stale callbacks, and verify one warning per recording session; retain periodic enforcement when an IDE does not expose setting-change notifications.

@@ -59,6 +59,8 @@ class EditorRecordingManager :
     private var desiredRecordingState: Boolean = false
     private val activeRecordingPaths: MutableSet<Path> = mutableSetOf()
     private var originalInlineCompletionEnabled: Boolean? = null
+    internal var recordingPluginGuard = RecordingPluginGuard()
+    private var checkingRecordingPlugins = false
     private val inlineCompletionGuard = InlineCompletionGuard(
         savedOriginal = { originalInlineCompletionEnabled },
         saveOriginal = { originalInlineCompletionEnabled = it },
@@ -119,6 +121,11 @@ class EditorRecordingManager :
      * Manages registration of document listeners used to log editor input while a recording session is active.
      */
     fun startRecording() {
+        val application = ApplicationManager.getApplication()
+        if (!application.isDispatchThread) {
+            application.invokeLater { startRecording() }
+            return
+        }
         logger.info(
             "Start recording requested: isRecording=${isRecording()}, " +
                 "openProjectCount=${ProjectManager.getInstance().openProjects.size}, os=${System.getProperty("os.name")}"
@@ -126,6 +133,16 @@ class EditorRecordingManager :
         if (listener != null) {
             logger.warn("Recording already active; ignoring start request")
             return
+        }
+        // Modal dialogs pump the event queue. Ignore additional startup/resume requests until the
+        // current check finishes so another project cannot bypass the gate or open a second modal.
+        if (checkingRecordingPlugins) return
+        checkingRecordingPlugins = true
+        desiredRecordingState = false
+        try {
+            if (!recordingPluginGuard.canStart { desiredRecordingState = true }) return
+        } finally {
+            checkingRecordingPlugins = false
         }
         desiredRecordingState = true
 

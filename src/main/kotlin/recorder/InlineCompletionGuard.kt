@@ -65,7 +65,15 @@ internal class InlineCompletionGuard(
     }
 
     private fun connect() {
-        val access = settingsProvider()
+        // The plugin, service, or reflective setting API may be absent (including when Full Line
+        // is disabled). Skip silently and allow a later periodic check to retry the lookup.
+        val access = try {
+            settingsProvider()
+        } catch (_: Exception) {
+            return
+        } catch (_: LinkageError) {
+            return
+        }
         val newPolicy = InlineCompletionPolicy(
             read = access::read,
             write = access::write,

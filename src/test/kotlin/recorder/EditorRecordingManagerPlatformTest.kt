@@ -15,10 +15,12 @@ import java.util.zip.GZIPInputStream
 
 class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
     private lateinit var manager: EditorRecordingManager
+    private lateinit var originalPluginGuard: RecordingPluginGuard
 
     override fun setUp() {
         super.setUp()
         manager = ApplicationManager.getApplication().getService(EditorRecordingManager::class.java)
+        originalPluginGuard = manager.recordingPluginGuard
         if (manager.isRecording()) {
             manager.stopRecording()
         }
@@ -29,9 +31,58 @@ class EditorRecordingManagerPlatformTest : BasePlatformTestCase() {
             if (manager.isRecording()) {
                 manager.stopRecording()
             }
+            manager.recordingPluginGuard = originalPluginGuard
+            manager.loadState(EditorRecordingManager.State())
         } finally {
             super.tearDown()
         }
+    }
+
+    fun testCancelPluginDialogPreventsRecordingAndAutomaticResume() {
+        var prompts = 0
+        manager.recordingPluginGuard = RecordingPluginGuard(
+            isEnabled = { true },
+            isDisabled = { false },
+            confirmDisable = {
+                prompts++
+                // A second project startup while the modal pumps events must not open a modal
+                // or register a listener of its own.
+                manager.startRecording()
+                false
+            },
+            disable = { error("Cancel must not disable plugins") },
+            restart = { error("Cancel must not restart the IDE") }
+        )
+
+        manager.startRecording()
+
+        assertEquals(1, prompts)
+        assertFalse(manager.isRecording())
+        assertFalse(manager.shouldResumeRecording())
+        assertFalse(manager.state.wasRecording)
+    }
+
+    fun testDisableAndRestartPreservesResumeWithoutStartingRecording() {
+        var restarts = 0
+        manager.recordingPluginGuard = RecordingPluginGuard(
+            isEnabled = { true },
+            isDisabled = { false },
+            confirmDisable = { true },
+            disable = { true },
+            canRestart = { true },
+            restart = {
+                restarts++
+                assertTrue(manager.state.wasRecording)
+                assertFalse(manager.isRecording())
+            }
+        )
+
+        manager.startRecording()
+
+        assertEquals(1, restarts)
+        assertFalse(manager.isRecording())
+        assertTrue(manager.shouldResumeRecording())
+        assertTrue(manager.state.wasRecording)
     }
 
     fun testRecordingOpenFileWithoutEditsProducesNoRecording() {
