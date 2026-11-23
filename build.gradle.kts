@@ -45,15 +45,11 @@ intellijPlatform {
 
         changeNotes = """
             <ul>
-              <li>Respect saved disabled plugin state to prevent repeated restart prompts on PyCharm 2026.2</li>
-              <li>Continue enforcing available inline-completion settings even when Full Line is already disabled</li>
               <li>Require Air and Full Line Code Completion to be disabled before recording starts, skipping absent or already disabled plugins</li>
-              <li>Offer a modal Cancel or Disable and Restart choice, and resume recording after the restart</li>
-              <li>Temporarily disable JetBrains language-model inline completion while recording and restore the previous preference when recording stops</li>
-              <li>Detect and revert attempts to re-enable inline completion during recording</li>
-              <li>Distinguish automatic setting changes from observed external changes with recorderSettingChanged and userSettingChanged recording events</li>
+              <li>Offer a modal Cancel or Disable and Restart choice; keep recording stopped until restart and resume afterward</li>
+              <li>Respect saved disabled plugin state to prevent repeated restart prompts on PyCharm 2026.2</li>
+              <li>Continue disabling and monitoring available inline-completion settings even when Full Line is already disabled, restoring the previous preference when recording stops</li>
               <li>Silently skip missing inline-completion settings; warn only when an available setting cannot be controlled or verified</li>
-              <li>Preserve the original preference across restarts and improve compatibility with modular PyCharm settings services</li>
             </ul>
         """.trimIndent()
     }
