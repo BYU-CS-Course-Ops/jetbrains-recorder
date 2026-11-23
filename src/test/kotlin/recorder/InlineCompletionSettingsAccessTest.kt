@@ -45,7 +45,7 @@ class InlineCompletionSettingsAccessTest {
     }
 
     @Test
-    fun `missing settings API is rejected for the guard to report as unsupported`() {
+    fun `missing settings API is rejected for the guard to skip silently`() {
         assertFailsWith<NoSuchMethodException> { InlineCompletionSettingsAccess(Any()) }
     }
 }
